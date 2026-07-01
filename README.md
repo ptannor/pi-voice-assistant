@@ -8,15 +8,16 @@ recording, and playback, with error handling for the usual Pi audio headaches
 (missing devices, permissions, ALSA/PulseAudio/PipeWire confusion, sample
 rate mismatches).
 
-> **What's actually been tested:** the target hardware is a **Raspberry Pi 4
-> Model B**, and the Pi-specific commands in this README are written for it.
-> The mic/speaker Python logic itself (device discovery, record, WAV
-> encode/decode, playback) has been verified end-to-end on a development
-> machine using a real **HyperX QuadCast S** — it has **not yet been run on
-> physical Raspberry Pi hardware**. Beyond that, the project assumes a
-> **generic USB microphone** and a **generic Bluetooth speaker**: nothing
-> here depends on QuadCast- or vendor-specific drivers, but no other specific
-> mic/speaker model has been tried.
+> **What's actually been tested:** the full record → save → playback round
+> trip has been verified on the actual target hardware — a **Raspberry Pi 4
+> Model B** with a real **HyperX QuadCast S** USB microphone — over Ethernet.
+> It was also verified earlier on a development machine during initial
+> implementation. Beyond the QuadCast S, the project assumes a **generic USB
+> microphone** and a **generic Bluetooth speaker**: nothing here depends on
+> QuadCast- or vendor-specific drivers, but no other specific mic/speaker
+> model has been tried, and Bluetooth speaker output hasn't been verified
+> end-to-end yet (see [Bluetooth speaker
+> setup](#bluetooth-speaker-setup)).
 
 ## Hardware
 
