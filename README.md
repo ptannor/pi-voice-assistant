@@ -36,12 +36,11 @@ each become their own module without touching this one.
 
 ## Setup on Raspberry Pi OS
 
-1. **System packages** — PortAudio needs ALSA underneath it, and `numpy`
-   compiles faster (or not at all) if you use the apt build:
+1. **System packages** — PortAudio needs ALSA underneath it:
 
    ```bash
    sudo apt update
-   sudo apt install -y python3-venv python3-pip libportaudio2 libasound2-dev alsa-utils
+   sudo apt install -y libportaudio2 libasound2-dev alsa-utils
    ```
 
 2. **Audio group permission** — avoids permission-denied errors opening the
@@ -64,14 +63,21 @@ each become their own module without touching this one.
    Python problem — check the USB connection and `dmesg | tail` for the mic,
    and check `raspi-config` → System Options → Audio for the speaker output.
 
-4. **Python environment**:
+4. **Install `uv`** (one-time, not preinstalled on Raspberry Pi OS):
+
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   source $HOME/.local/bin/env
+   ```
+
+5. **Python environment**:
 
    ```bash
    git clone https://github.com/ptannor/pi-voice-assistant.git
    cd pi-voice-assistant
-   python3 -m venv .venv
+   uv venv .venv
    source .venv/bin/activate
-   pip install -r requirements.txt
+   uv pip install -r requirements.txt
    ```
 
 ## Usage
