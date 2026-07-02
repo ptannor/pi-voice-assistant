@@ -118,6 +118,28 @@ By default the mic is selected by matching `"QuadCast"` in the device name
 output. Change `input_name_hint` / `output_name_hint` in `config.py` if your
 setup differs.
 
+## Updating the Pi
+
+Once SSH access is set up (a dedicated key, e.g. `~/.ssh/pi_voice_assistant`,
+copied to the Pi with `ssh-copy-id`), pull the latest code onto the Pi from a
+machine that has that access, without needing to log into the Pi manually:
+
+```bash
+./update-pi.sh
+```
+
+This SSHes in, does a fast-forward `git pull`, and reinstalls any new
+dependencies into the existing `.venv`. It expects the initial setup (clone +
+`uv venv` + `uv pip install`) to already be done on the Pi — it only updates
+an existing install.
+
+Override defaults with environment variables if your setup differs:
+
+```bash
+PI_USER=pi PI_HOST=raspberrypi.local PI_DIR=pi-voice-assistant \
+  SSH_KEY=~/.ssh/pi_voice_assistant ./update-pi.sh
+```
+
 ## Bluetooth speaker setup
 
 Only needed if you're using a Bluetooth speaker instead of a wired one —
