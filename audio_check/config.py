@@ -8,7 +8,7 @@ from pathlib import Path
 class AudioConfig:
     sample_rate: int = 44100
     channels: int = 1
-    duration_seconds: float = 7.0
+    duration_seconds: float = 6.0
     dtype: str = "int16"
 
     # Substring match (case-insensitive) used to auto-pick devices by name.
