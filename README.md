@@ -263,6 +263,21 @@ python3 main.py playback --device-hint "USB"
 Or set the Pi's default output device via `raspi-config` → System Options →
 Audio.
 
+**`update-pi.sh` fails with `cd: pi-voice-assistant: No such file or directory`**
+The script assumes the repo was cloned directly into your home directory on
+the Pi (`~/pi-voice-assistant`). If you cloned it somewhere else (e.g.
+`~/Code/pi-voice-assistant`), set `PI_DIR` to that path relative to home in
+your `.pi-config` — e.g. `PI_DIR=Code/pi-voice-assistant`.
+
+**`update-pi.sh` fails with `uv: command not found`**
+`uv`'s installer adds `~/.local/bin` to `PATH` via your shell's rc file
+(`.bashrc`/`.profile`), but `ssh host command` runs a non-interactive,
+non-login shell that doesn't source those files — so `uv` is installed and
+works fine when you SSH in manually, but isn't found when driven remotely.
+`update-pi.sh` already works around this by exporting
+`PATH="$HOME/.local/bin:$PATH"` before running `uv`; if you hit this outside
+the script (e.g. in your own automation), add the same line.
+
 ## Roadmap (not in this milestone)
 
 - Wake word detection
