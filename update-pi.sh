@@ -3,7 +3,7 @@
 # reinstalls dependencies. Run from a machine with SSH access to the Pi.
 set -euo pipefail
 
-PI_USER="${PI_USER:-pi}"
+PI_USER="${PI_USER:-philip}"
 PI_HOST="${PI_HOST:-raspberrypi.local}"
 PI_DIR="${PI_DIR:-pi-voice-assistant}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/pi_voice_assistant}"

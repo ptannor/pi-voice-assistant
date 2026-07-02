@@ -136,7 +136,7 @@ an existing install.
 Override defaults with environment variables if your setup differs:
 
 ```bash
-PI_USER=pi PI_HOST=raspberrypi.local PI_DIR=pi-voice-assistant \
+PI_USER=philip PI_HOST=raspberrypi.local PI_DIR=pi-voice-assistant \
   SSH_KEY=~/.ssh/pi_voice_assistant ./update-pi.sh
 ```
 
