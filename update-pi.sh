@@ -26,6 +26,7 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/pi_voice_assistant}"
 
 ssh -i "$SSH_KEY" "$PI_USER@$PI_HOST" bash -s -- "$PI_DIR" <<'EOF'
 set -euo pipefail
+export PATH="$HOME/.local/bin:$PATH"
 cd "$1"
 
 if [ ! -d .venv ]; then
