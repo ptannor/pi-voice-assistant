@@ -133,7 +133,12 @@ dependencies into the existing `.venv`. It expects the initial setup (clone +
 `uv venv` + `uv pip install`) to already be done on the Pi — it only updates
 an existing install.
 
-Override defaults with environment variables if your setup differs:
+The first time you run it, it'll ask for your Pi's SSH username (since that's
+personal to your setup, not something to hardcode in a shared script) and
+offer to save it to `.pi-config` — a local, gitignored file — so you're not
+asked again on future runs.
+
+Override any default with environment variables if your setup differs:
 
 ```bash
 PI_USER=philip PI_HOST=raspberrypi.local PI_DIR=pi-voice-assistant \

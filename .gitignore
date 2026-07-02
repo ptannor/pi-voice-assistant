@@ -5,3 +5,4 @@ venv/
 recordings/*.wav
 !recordings/.gitkeep
 .DS_Store
+.pi-config

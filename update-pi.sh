@@ -3,7 +3,23 @@
 # reinstalls dependencies. Run from a machine with SSH access to the Pi.
 set -euo pipefail
 
-PI_USER="${PI_USER:-philip}"
+CONFIG_FILE="$(dirname "$0")/.pi-config"
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+
+if [ -z "${PI_USER:-}" ]; then
+  if [ -t 0 ]; then
+    read -rp "Pi SSH username: " PI_USER
+    read -rp "Save as default for next time (stored locally, not in git)? [Y/n] " save_choice
+    if [[ "${save_choice:-y}" =~ ^[Yy]?$ ]]; then
+      echo "PI_USER=$PI_USER" >> "$CONFIG_FILE"
+      echo "Saved to $CONFIG_FILE"
+    fi
+  else
+    echo "PI_USER not set and no terminal to prompt. Set PI_USER or create $CONFIG_FILE (see README)." >&2
+    exit 1
+  fi
+fi
+
 PI_HOST="${PI_HOST:-raspberrypi.local}"
 PI_DIR="${PI_DIR:-pi-voice-assistant}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/pi_voice_assistant}"
