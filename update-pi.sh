@@ -29,14 +29,9 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 cd "$1"
 
-if [ ! -d .venv ]; then
-  echo "No .venv found in $1 — run the initial setup from the README first." >&2
-  exit 1
-fi
-
 echo "Before: $(git rev-parse --short HEAD)"
 git fetch origin
 git pull --ff-only
-uv pip install --python .venv/bin/python -r requirements.txt
+uv sync
 echo "After:  $(git rev-parse --short HEAD)"
 EOF

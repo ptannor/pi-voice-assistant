@@ -1,0 +1,9 @@
+[project]
+name = "pi-voice-assistant"
+version = "0.1.0"
+description = "Raspberry Pi 4 voice assistant — Milestone 1: mic/speaker hardware connectivity check"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "sounddevice",
+]

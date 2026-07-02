@@ -42,7 +42,8 @@ pi-voice-assistant/
 │   ├── errors.py        # friendly exception types
 │   └── cli.py           # CLI commands + interactive menu
 ├── recordings/          # test WAV output (gitignored)
-└── requirements.txt
+├── pyproject.toml       # dependencies (numpy, sounddevice)
+└── uv.lock
 ```
 
 Kept deliberately small and modular so later milestones (wake word detection,
@@ -85,32 +86,31 @@ each become their own module without touching this one.
    source $HOME/.local/bin/env
    ```
 
-5. **Python environment**:
+5. **Python environment** — no manual venv creation or activation needed;
+   `uv sync` reads `pyproject.toml` and handles it:
 
    ```bash
    git clone https://github.com/ptannor/pi-voice-assistant.git
    cd pi-voice-assistant
-   uv venv .venv
-   source .venv/bin/activate
-   uv pip install -r requirements.txt
+   uv sync
    ```
 
 ## Usage
 
 ```bash
-python3 main.py list-devices     # show all input/output devices, with defaults marked
-python3 main.py record           # record 7s from the mic (auto-picks "QuadCast" by name)
-python3 main.py playback         # play back the last recording
-python3 main.py test             # full round trip: record then play back
-python3 main.py                  # no args -> interactive menu with the same 4 options
+uv run main.py list-devices     # show all input/output devices, with defaults marked
+uv run main.py record           # record 7s from the mic (auto-picks "QuadCast" by name)
+uv run main.py playback         # play back the last recording
+uv run main.py test             # full round trip: record then play back
+uv run main.py                  # no args -> interactive menu with the same 4 options
 ```
 
 Options:
 
 ```bash
-python3 main.py record --seconds 10 --file recordings/longer.wav
-python3 main.py playback --file recordings/longer.wav
-python3 main.py record --device-hint "USB"   # override the default device match
+uv run main.py record --seconds 10 --file recordings/longer.wav
+uv run main.py playback --file recordings/longer.wav
+uv run main.py record --device-hint "USB"   # override the default device match
 ```
 
 By default the mic is selected by matching `"QuadCast"` in the device name
@@ -128,10 +128,10 @@ machine that has that access, without needing to log into the Pi manually:
 ./update-pi.sh
 ```
 
-This SSHes in, does a fast-forward `git pull`, and reinstalls any new
-dependencies into the existing `.venv`. It expects the initial setup (clone +
-`uv venv` + `uv pip install`) to already be done on the Pi — it only updates
-an existing install.
+This SSHes in, does a fast-forward `git pull`, and runs `uv sync` to bring
+dependencies up to date — this creates the venv on first run too, so an
+initial `uv sync` on the Pi isn't strictly required beforehand, but cloning
+and syncing once yourself (per Setup above) is still the clearer first step.
 
 The first time you run it, it'll ask for your Pi's SSH username (since that's
 personal to your setup, not something to hardcode in a shared script) and
@@ -177,7 +177,7 @@ project can see it at all.
    ```
 
 3. **Set it as the default output** so both the OS and
-   `python3 main.py list-devices`/`test` pick it up automatically:
+   `uv run main.py list-devices`/`test` pick it up automatically:
 
    ```bash
    wpctl set-default <sink-id>        # PipeWire
@@ -186,7 +186,7 @@ project can see it at all.
 
    Or via `raspi-config` → System Options → Audio.
 
-4. Re-run `python3 main.py list-devices` — the speaker should now appear
+4. Re-run `uv run main.py list-devices` — the speaker should now appear
    with output channels > 0. If it doesn't, the sound server isn't routing
    to it yet; recheck step 3 before assuming this project's code is at fault.
 
@@ -201,10 +201,10 @@ arecord -l
 aplay -l
 
 # 2. Confirm PortAudio/Python sees the same devices
-python3 main.py list-devices
+uv run main.py list-devices
 
 # 3. Full round trip — speak into the mic when it says "Recording..."
-python3 main.py test
+uv run main.py test
 ```
 
 If you hear your own voice played back through the speaker, both the
@@ -225,7 +225,7 @@ added: `sudo usermod -aG audio $USER`, then log out and back in.
 **ALSA / PulseAudio / PipeWire fighting each other**
 Raspberry Pi OS Bookworm ships PipeWire by default; older Bullseye images may
 have bare ALSA or PulseAudio. Symptoms: device shows up in `arecord -l` but
-not in `python3 main.py list-devices`, or vice versa. Check which sound
+not in `uv run main.py list-devices`, or vice versa. Check which sound
 server is actually running:
 
 ```bash
@@ -253,11 +253,11 @@ the error message includes the device name so you can check its supported
 rates against `list-devices`.
 
 **Wrong device selected (e.g. HDMI instead of the speaker you expected)**
-Use `python3 main.py list-devices` to find the correct index, then pass it
+Use `uv run main.py list-devices` to find the correct index, then pass it
 explicitly:
 
 ```bash
-python3 main.py playback --device-hint "USB"
+uv run main.py playback --device-hint "USB"
 ```
 
 Or set the Pi's default output device via `raspi-config` → System Options →
