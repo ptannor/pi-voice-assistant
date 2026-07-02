@@ -3,7 +3,7 @@
 Milestone 1 of a Raspberry Pi 4 voice assistant: verify that the microphone
 and speaker are actually working before building anything smarter on top.
 
-No wake word, no speech recognition yet — just device discovery, a 5-second
+No wake word, no speech recognition yet — just device discovery, a 7-second
 recording, and playback, with error handling for the usual Pi audio headaches
 (missing devices, permissions, ALSA/PulseAudio/PipeWire confusion, sample
 rate mismatches).
@@ -99,7 +99,7 @@ each become their own module without touching this one.
 
 ```bash
 python3 main.py list-devices     # show all input/output devices, with defaults marked
-python3 main.py record           # record 5s from the mic (auto-picks "QuadCast" by name)
+python3 main.py record           # record 7s from the mic (auto-picks "QuadCast" by name)
 python3 main.py playback         # play back the last recording
 python3 main.py test             # full round trip: record then play back
 python3 main.py                  # no args -> interactive menu with the same 4 options
