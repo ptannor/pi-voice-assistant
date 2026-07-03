@@ -40,7 +40,10 @@ def main() -> None:
         sys.exit(1)
 
     openwakeword.utils.download_models(model_names=[WAKE_WORD])
-    model = Model(wakeword_models=[WAKE_WORD])
+    # Force onnx: the tflite_runtime wheel available on some platforms (e.g. the
+    # Pi's aarch64 build) is compiled against NumPy 1.x and breaks under NumPy 2.x
+    # ("_ARRAY_API not found"). onnxruntime works correctly on both dev machine and Pi.
+    model = Model(wakeword_models=[WAKE_WORD], inference_framework="onnx")
 
     print(
         f"Listening for '{WAKE_WORD}' on '{in_device.name}' (index {in_device.index})...",
