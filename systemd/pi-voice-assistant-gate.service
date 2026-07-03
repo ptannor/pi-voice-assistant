@@ -1,0 +1,11 @@
+[Unit]
+Description=pi-voice-assistant Shabbat/Yom Tov gate checker (one-shot, run by the .timer)
+
+[Service]
+Type=oneshot
+# User-level unit (not root/system) -- runs as the same user as
+# pi-voice-assistant.service so it shares that PipeWire audio session for
+# playing announcements, and can control the wake-word daemon via
+# `systemctl --user` without needing elevated privileges.
+WorkingDirectory=/home/<PI_USER>/<PI_DIR>
+ExecStart=/home/<PI_USER>/.local/bin/uv run python -m shabbat.gate

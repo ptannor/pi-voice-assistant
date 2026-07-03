@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Shabbat/Yom Tov gate checker every minute
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

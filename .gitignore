@@ -7,3 +7,5 @@ recordings/*.wav
 .DS_Store
 .pi-config
 .env
+shabbat_cache.json
+shabbat_state.json

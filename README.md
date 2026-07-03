@@ -49,10 +49,19 @@ pi-voice-assistant/
 │   ├── player.py        # WAV -> playback
 │   ├── errors.py        # friendly exception types
 │   └── cli.py           # CLI commands + interactive menu
+├── shabbat/
+│   ├── config.py        # location (from .pi-config), warning offsets, message text
+│   ├── hebcal_client.py # fetch + cache candle-lighting/havdalah/Yom Tov data
+│   ├── schedule.py      # merge into gate windows, compute scheduled announcements
+│   ├── ntp.py           # clock-trustworthiness check (fail closed if unsynced)
+│   └── gate.py          # entry point: run every minute via the gate .timer
 ├── assets/
-│   └── hey.wav          # canned wake-word response clip
+│   ├── hey.wav          # canned wake-word response clip
+│   └── shabbat/         # pre-recorded Hebrew entrance/exit/warning announcements
 ├── systemd/
-│   └── pi-voice-assistant.service   # unit file for wake_word_daemon.py
+│   ├── pi-voice-assistant.service        # wake_word_daemon.py (user unit)
+│   ├── pi-voice-assistant-gate.service   # shabbat/gate.py, one-shot (user unit)
+│   └── pi-voice-assistant-gate.timer     # runs the gate checker every minute
 ├── docs/specs/          # design specs written before implementing risky features
 ├── recordings/          # test WAV output (gitignored)
 ├── pyproject.toml       # dependencies (numpy, sounddevice, openwakeword)
@@ -342,15 +351,26 @@ speaking at a normal distance/volume, and the terminal actually printed
 
 ## Running as a background service
 
-`systemd/pi-voice-assistant.service` is a template unit file that runs
-`wake_word_daemon.py` persistently — survives SSH disconnects, restarts on
-crash, starts on boot. Install it on the Pi:
+`systemd/pi-voice-assistant.service` runs `wake_word_daemon.py` persistently
+— survives SSH disconnects, restarts on crash. It's a **user-level** systemd
+unit (`systemctl --user`, not `sudo systemctl`) rather than a system unit,
+specifically so it shares your normal login session's PipeWire audio setup
+— a root/system-level service would not have access to that per-user audio
+session at all.
+
+**Important: don't enable it to auto-start on boot.** Only the [Shabbat/Yom
+Tov gate checker](#shabbatyom-tov-gating) below should ever start this
+service — that way a fresh boot defaults to "not listening" until the
+checker has actually confirmed it's safe to run, rather than blindly
+listening from the moment the Pi powers on.
+
+Install (but don't enable) it:
 
 ```bash
-sudo cp systemd/pi-voice-assistant.service /etc/systemd/system/
-sudo nano /etc/systemd/system/pi-voice-assistant.service   # replace <PI_USER> and <PI_DIR>
-sudo systemctl daemon-reload
-sudo systemctl enable --now pi-voice-assistant
+mkdir -p ~/.config/systemd/user
+cp systemd/pi-voice-assistant.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+loginctl enable-linger $USER   # lets user-level services run without an active login session
 ```
 
 Note `ExecStart` uses the **absolute path** to `uv`
@@ -363,15 +383,72 @@ service — openWakeWord requires no account or API key at all.
 Check on it:
 
 ```bash
-systemctl status pi-voice-assistant
-journalctl -u pi-voice-assistant -f   # watch for "Wake word detected: alexa"
+systemctl --user status pi-voice-assistant
+journalctl --user -u pi-voice-assistant -f   # watch for "Wake word detected: alexa"
 ```
 
-Stop it (e.g. before running `uv run main.py test` manually, so both aren't
-fighting over the mic at once):
+Manually start/stop it (e.g. before running `uv run main.py test`, so both
+aren't fighting over the mic at once — though normally the gate checker is
+what starts/stops it, not you directly):
 
 ```bash
-sudo systemctl stop pi-voice-assistant
+systemctl --user stop pi-voice-assistant
+systemctl --user start pi-voice-assistant
+```
+
+## Shabbat/Yom Tov gating
+
+Design doc: `docs/specs/shabbat-gating.md`. The device must not operate
+during Shabbat or Yom Tov — this is enforced by a separate checker
+(`shabbat/gate.py`) that runs every minute via its own systemd timer,
+independent of the wake-word daemon's own code, so a bug in one doesn't
+compromise the other. It:
+
+- Stops `pi-voice-assistant` (the wake-word daemon) at candle-lighting and
+  starts it again at havdalah, using cached [Hebcal](https://www.hebcal.com/)
+  data (candle-lighting, havdalah, and Yom Tov days) for your configured
+  location.
+- Plays spoken warnings at 15/10/5 minutes before candle-lighting, plus
+  distinct entrance/exit announcements — with separate Hebrew wording for
+  Shabbat vs. Yom Tov (see the spec for why that distinction matters).
+- **Fails closed on any uncertainty**: if the system clock isn't confirmed
+  NTP-synced, or the cached zmanim data is missing/stale beyond 30 days, it
+  gates the device *off* rather than risk operating during Shabbat.
+- Gates on full Yom Tov days only (Rosh Hashana, Yom Kippur, Pesach I/VII,
+  Shavuot, Sukkot I, Shmini Atzeret) — Chol HaMoed (the intermediate days of
+  Pesach/Sukkot) is treated as a regular day.
+
+**One-time setup — set your location** (personal, gitignored, same pattern
+as `.pi-config`'s other values):
+
+```bash
+# add to .pi-config:
+SHABBAT_GEONAMEID=<your city's Hebcal geonameid>
+SHABBAT_ISRAEL=true   # or false for Diaspora (affects one vs. two days of Yom Tov)
+```
+
+Find your geonameid via Hebcal's city search: `curl -s "https://www.hebcal.com/complete.php?q=YourCity"`
+
+**Install the gate checker** (also a user-level unit, for the same
+audio-session reason as above):
+
+```bash
+cp systemd/pi-voice-assistant-gate.service systemd/pi-voice-assistant-gate.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pi-voice-assistant-gate.timer
+```
+
+Check on it:
+
+```bash
+systemctl --user list-timers pi-voice-assistant-gate.timer
+journalctl --user -u pi-voice-assistant-gate -f
+```
+
+Run it once manually to test immediately rather than waiting for the timer:
+
+```bash
+uv run python -m shabbat.gate
 ```
 
 ## Roadmap (not in this milestone)
@@ -381,5 +458,6 @@ sudo systemctl stop pi-voice-assistant
 - Hebrew + English speech recognition
 - Timers
 - Spotify control
-- Zmanim lookups
-- Shabbat mode — see `docs/specs/shabbat-gating.md` for the (unimplemented) design
+- Voice-queryable zmanim ("when does Shabbat start?") — the underlying Hebcal
+  data already exists for gating (see [Shabbat/Yom Tov
+  gating](#shabbatyom-tov-gating)), just not exposed as a spoken query yet

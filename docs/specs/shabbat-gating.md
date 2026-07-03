@@ -1,7 +1,13 @@
 # Spec: Shabbat / Yom Tov gating
 
-Status: ready to implement — two non-blocking loose ends flagged for confirmation (inferred Yom
-Tov wording, provisional havdalah parameter). See Open questions.
+Status: implemented (`shabbat/` package + `systemd/pi-voice-assistant-gate.{service,timer}`).
+Both loose ends resolved during implementation: Yom Tov wording confirmed via the entrance-side
+symmetry inference; havdalah uses Hebcal's actual default (8.5° below horizon / "three small
+stars"), not the placeholder 42-minute figure. One architecture change vs. the original spec:
+both this checker and the wake-word daemon run as **user-level** systemd units (`systemctl
+--user`), not system/root units as implied by "a `systemd` timer... stops the... service" in the
+Fail-safe rules below — a root-level service would not have access to the per-user PipeWire
+audio session needed to play the announcements.
 
 ## Why this is first
 
