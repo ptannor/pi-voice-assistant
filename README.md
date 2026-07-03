@@ -3,10 +3,12 @@
 Milestone 1 of a Raspberry Pi 4 voice assistant: verify that the microphone
 and speaker are actually working before building anything smarter on top.
 
-No wake word, no speech recognition yet — just device discovery, a 6.5-second
-recording, and playback, with error handling for the usual Pi audio headaches
-(missing devices, permissions, ALSA/PulseAudio/PipeWire confusion, sample
-rate mismatches).
+Milestone 1 covers device discovery, a 6.5-second recording, and playback,
+with error handling for the usual Pi audio headaches (missing devices,
+permissions, ALSA/PulseAudio/PipeWire confusion, sample rate mismatches).
+A minimal wake-word proof-of-concept (`wake_word_daemon.py` — "Alexa" triggers
+a canned response, no STT/LLM yet) is also in place; see [Wake
+word](#wake-word-alexa) below.
 
 > **What's actually been tested:** the full record → save → playback round
 > trip has been verified on the actual target hardware — a **Raspberry Pi 4
@@ -17,7 +19,12 @@ rate mismatches).
 > QuadCast- or vendor-specific drivers, but no other specific mic/speaker
 > model has been tried, and Bluetooth speaker output hasn't been verified
 > end-to-end yet (see [Bluetooth speaker
-> setup](#bluetooth-speaker-setup)).
+> setup](#bluetooth-speaker-setup)). The [wake word](#wake-word-alexa)
+> pipeline is verified up to the mic-capture stage (confirmed real audio
+> flows through at the correct format via direct RMS measurement) but actual
+> "Alexa" **detection with a real human voice is not yet confirmed** — a
+> synthetic TTS test voice didn't trigger it, which may just mean the model
+> needs real speech rather than indicating a bug.
 
 ## Hardware
 
@@ -34,6 +41,7 @@ rate mismatches).
 ```
 pi-voice-assistant/
 ├── main.py              # entry point
+├── wake_word_daemon.py  # always-on: "Alexa" -> canned "hey" response (see below)
 ├── audio_check/
 │   ├── config.py        # sample rate, channels, duration, device name hints
 │   ├── devices.py       # enumerate & select input/output devices
@@ -41,8 +49,13 @@ pi-voice-assistant/
 │   ├── player.py        # WAV -> playback
 │   ├── errors.py        # friendly exception types
 │   └── cli.py           # CLI commands + interactive menu
+├── assets/
+│   └── hey.wav          # canned wake-word response clip
+├── systemd/
+│   └── pi-voice-assistant.service   # unit file for wake_word_daemon.py
+├── docs/specs/          # design specs written before implementing risky features
 ├── recordings/          # test WAV output (gitignored)
-├── pyproject.toml       # dependencies (numpy, sounddevice)
+├── pyproject.toml       # dependencies (numpy, sounddevice, openwakeword)
 └── uv.lock
 ```
 
@@ -278,11 +291,78 @@ works fine when you SSH in manually, but isn't found when driven remotely.
 `PATH="$HOME/.local/bin:$PATH"` before running `uv`; if you hit this outside
 the script (e.g. in your own automation), add the same line.
 
+## Wake word ("Alexa")
+
+`wake_word_daemon.py` listens continuously for the wake word **"Alexa"** and
+plays a canned "hey" response when it hears it — no speech-to-text, no LLM,
+just proving the always-on detect-and-respond loop works. This uses
+[openWakeWord](https://github.com/dscripka/openWakeWord)'s free, fully
+open-source pretrained "alexa" model — **no account, no API key, no signup**
+required at all, unlike Porcupine (which was the original choice for this
+proof-of-concept using its "jarvis" keyword, until Picovoice discontinued
+its free tier in June 2026 and replaced it with a 7-day trial). "Alexa" is a
+placeholder for the real custom-trained wake words ("Menachem Mendel" /
+"Mendy") planned for a later milestone, also via openWakeWord.
+
+**Run it** (no setup beyond `uv sync` — model files download automatically
+on first run):
+
+```bash
+uv run wake_word_daemon.py
+```
+
+Say "Alexa" — you should hear the canned response play back.
+
+**Verification status:** the mic-capture and playback pipeline is confirmed
+working (real audio flows through at the correct 16kHz format, response WAV
+plays correctly), but actual wake-word *detection* with a real human voice
+has not yet been confirmed — testing with macOS's synthetic TTS voice didn't
+trigger it, which may simply mean the model needs real speech rather than
+indicating a bug. If it doesn't trigger for you, check: the mic's physical
+gain isn't turned down (a real issue hit earlier in this project), you're
+speaking at a normal distance/volume, and the terminal actually printed
+`Listening for 'alexa' on '...'...` before you spoke.
+
+## Running as a background service
+
+`systemd/pi-voice-assistant.service` is a template unit file that runs
+`wake_word_daemon.py` persistently — survives SSH disconnects, restarts on
+crash, starts on boot. Install it on the Pi:
+
+```bash
+sudo cp systemd/pi-voice-assistant.service /etc/systemd/system/
+sudo nano /etc/systemd/system/pi-voice-assistant.service   # replace <PI_USER> and <PI_DIR>
+sudo systemctl daemon-reload
+sudo systemctl enable --now pi-voice-assistant
+```
+
+Note `ExecStart` uses the **absolute path** to `uv`
+(`/home/<PI_USER>/.local/bin/uv`) rather than relying on `PATH` — systemd
+services start with an even more minimal environment than a non-interactive
+SSH session, so the same PATH issue described above applies here too, just
+with no shell to add a workaround line to. No secrets/`.env` needed for this
+service — openWakeWord requires no account or API key at all.
+
+Check on it:
+
+```bash
+systemctl status pi-voice-assistant
+journalctl -u pi-voice-assistant -f   # watch for "Wake word detected: alexa"
+```
+
+Stop it (e.g. before running `uv run main.py test` manually, so both aren't
+fighting over the mic at once):
+
+```bash
+sudo systemctl stop pi-voice-assistant
+```
+
 ## Roadmap (not in this milestone)
 
-- Wake word detection
+- Custom-trained wake words ("Menachem Mendel" / "Mendy" via openWakeWord) —
+  `wake_word_daemon.py`'s "Alexa" is a pretrained placeholder, not the real thing
 - Hebrew + English speech recognition
 - Timers
 - Spotify control
 - Zmanim lookups
-- Shabbat mode
+- Shabbat mode — see `docs/specs/shabbat-gating.md` for the (unimplemented) design

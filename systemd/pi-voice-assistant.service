@@ -1,0 +1,14 @@
+[Unit]
+Description=pi-voice-assistant wake word daemon ("Alexa" -> canned "hey" response)
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=<PI_USER>
+WorkingDirectory=/home/<PI_USER>/<PI_DIR>
+ExecStart=/home/<PI_USER>/.local/bin/uv run wake_word_daemon.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
