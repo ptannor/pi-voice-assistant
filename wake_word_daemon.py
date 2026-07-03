@@ -32,6 +32,16 @@ DETECTION_THRESHOLD = 0.5
 COOLDOWN_SECONDS = 2.0  # ignore re-triggers while the response is still playing/echoing
 
 
+def _play_response(out_device) -> None:
+    # Runs on a background thread -- exceptions here would otherwise vanish
+    # silently instead of surfacing, since nothing joins() this thread.
+    try:
+        play_wav(RESPONSE_WAV, out_device)
+        print("Response playback finished OK", flush=True)
+    except Exception as exc:
+        print(f"Response playback FAILED: {exc!r}", file=sys.stderr, flush=True)
+
+
 def main() -> None:
     cfg = DEFAULT_CONFIG
     try:
@@ -76,9 +86,7 @@ def main() -> None:
             if score > DETECTION_THRESHOLD and (now - last_trigger) > COOLDOWN_SECONDS:
                 last_trigger = now
                 print(f"Wake word detected: {WAKE_WORD} (score={score:.2f})", flush=True)
-                threading.Thread(
-                    target=play_wav, args=(RESPONSE_WAV, out_device), daemon=True
-                ).start()
+                threading.Thread(target=_play_response, args=(out_device,), daemon=True).start()
 
     threading.Thread(target=process_audio, daemon=True).start()
 
