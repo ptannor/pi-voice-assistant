@@ -101,9 +101,15 @@ def find_input_device(name_hint: str | None) -> Device:
         matches = [d for d in devices if name_hint.lower() in d.name.lower()]
         if matches:
             return matches[0]
-        raise NoInputDeviceFound(
-            f"No input device matching '{name_hint}' found. Available input "
-            f"devices: {', '.join(d.name for d in devices)}"
+        # Fall back to the default device rather than hard-failing: some contexts
+        # (e.g. a systemd --user service, whose cgroup PipeWire's access control
+        # treats differently than an interactive login session) only expose the
+        # generic "pulse"/"default" passthrough, not named hardware devices, even
+        # though that passthrough correctly routes to the same physical hardware.
+        print(
+            f"Warning: no input device matching '{name_hint}' found (saw: "
+            f"{', '.join(d.name for d in devices)}) -- falling back to the "
+            "system default input.",
         )
 
     default_in, _ = _default_indices()
@@ -126,9 +132,10 @@ def find_output_device(name_hint: str | None) -> Device:
         matches = [d for d in devices if name_hint.lower() in d.name.lower()]
         if matches:
             return matches[0]
-        raise NoOutputDeviceFound(
-            f"No output device matching '{name_hint}' found. Available output "
-            f"devices: {', '.join(d.name for d in devices)}"
+        print(
+            f"Warning: no output device matching '{name_hint}' found (saw: "
+            f"{', '.join(d.name for d in devices)}) -- falling back to the "
+            "system default output.",
         )
 
     _, default_out = _default_indices()
