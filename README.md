@@ -291,6 +291,23 @@ works fine when you SSH in manually, but isn't found when driven remotely.
 `PATH="$HOME/.local/bin:$PATH"` before running `uv`; if you hit this outside
 the script (e.g. in your own automation), add the same line.
 
+**`update-pi.sh` (or `uv sync` on the Pi) fails with a 401 fetching a package from an internal registry**
+This means `uv.lock` was regenerated on a machine with a corporate/internal
+package registry proxy set as the default package index (e.g. via a
+`UV_INDEX` environment variable and/or a global `uv` config file) — the Pi
+has no access to that proxy and never should. This repo's `pyproject.toml`
+pins a `[[tool.uv.index]]` override to public PyPI specifically for this
+project, but **environment variables take precedence over it**, so
+regenerating the lockfile on such a machine without unsetting the override
+first will silently re-poison `uv.lock` with internal-registry URLs again.
+If you ever update dependencies here on a machine with a corporate registry
+default, unset any `UV_INDEX*` environment variables first, e.g.:
+```bash
+env -u UV_INDEX uv sync
+```
+(add more `-u` flags for any other `UV_INDEX_*` variables your setup sets),
+then confirm the lockfile only references `pypi.org` before committing.
+
 ## Wake word ("Alexa")
 
 `wake_word_daemon.py` listens continuously for the wake word **"Alexa"** and

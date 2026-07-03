@@ -8,3 +8,11 @@ dependencies = [
     "sounddevice",
     "openwakeword",
 ]
+
+# This is a personal project deployed to a home Raspberry Pi with no access to
+# a corporate package registry proxy that some development machines default to
+# -- resolve from public PyPI instead of inheriting that machine-wide index.
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
