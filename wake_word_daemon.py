@@ -10,6 +10,7 @@ signup) as a stand-in for the eventual custom-trained "Menachem Mendel" /
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -64,9 +65,12 @@ def main() -> None:
         if score > DETECTION_THRESHOLD and (now - last_trigger) > COOLDOWN_SECONDS:
             last_trigger = now
             print(f"Wake word detected: {WAKE_WORD} (score={score:.2f})", flush=True)
-            # Blocks this callback thread until playback finishes -- acceptable for
-            # this proof-of-concept since we don't want to detect our own response anyway.
-            play_wav(RESPONSE_WAV, out_device)
+            # Play on a separate thread -- play_wav() blocks for the duration of
+            # playback, and blocking this callback starves the input stream of
+            # new audio, causing overflow and disrupting subsequent detections.
+            threading.Thread(
+                target=play_wav, args=(RESPONSE_WAV, out_device), daemon=True
+            ).start()
 
     with sd.InputStream(
         device=in_device.index,
