@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 
 HEBREW_RE = re.compile(r"[֐-׿]")
+LANGUAGE_NAMES = {"he": "Hebrew", "en": "English"}
 
 
 def detect_language(text: str, acoustic_hint: str | None = None) -> str:

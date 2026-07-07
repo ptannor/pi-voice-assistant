@@ -4,6 +4,7 @@ from __future__ import annotations
 import anthropic
 
 from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL
+from .language import LANGUAGE_NAMES
 from .tools import TOOLS, execute_tool
 
 SYSTEM_PROMPT = """You are Menachem Mendel, a friendly voice assistant for a home.
@@ -13,12 +14,12 @@ conversational -- a sentence or two, not a lecture.
 Always reply in the same language the user just spoke to you in: if they
 spoke English, reply in English; if they spoke Hebrew, reply in Hebrew.
 
-Use the available tools for anything they cover (timers, music). Don't claim
-to have done something physical/real-world unless a tool result actually
+Use the available tools for anything they cover. Don't claim to have done
+something physical/real-world, or given specific factual info you don't
+actually have (like today's zmanim or parsha), unless a tool result actually
 confirms it.
 """
 
-_LANGUAGE_NAMES = {"he": "Hebrew", "en": "English"}
 _MAX_TOOL_ROUNDS = 3  # safety cap against a runaway tool-call loop
 
 
@@ -37,7 +38,7 @@ def ask(user_text: str, language: str, history: list[dict] | None = None) -> tup
         raise BrainError("ANTHROPIC_API_KEY not set -- add it to .env")
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    language_name = _LANGUAGE_NAMES[language]
+    language_name = LANGUAGE_NAMES[language]
     messages = (history or []) + [
         {"role": "user", "content": f"[The user spoke in {language_name}] {user_text}"}
     ]
@@ -51,7 +52,11 @@ def ask(user_text: str, language: str, history: list[dict] | None = None) -> tup
             rounds += 1
             messages.append({"role": "assistant", "content": response.content})
             tool_results = [
-                {"type": "tool_result", "tool_use_id": block.id, "content": execute_tool(block.name)}
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": execute_tool(block.name, language),
+                }
                 for block in response.content
                 if block.type == "tool_use"
             ]
