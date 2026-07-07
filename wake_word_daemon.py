@@ -23,18 +23,21 @@ from audio_check.config import DEFAULT_CONFIG
 from audio_check.devices import Device, find_input_device, find_output_device
 from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed
 from audio_check.player import play_wav
-from audio_check.recorder import record_to_wav
+from audio_check.recorder import record_until_silence
 from brain.llm import BrainError, ask
 from brain.respond import synthesize_reply
 from brain.stt import TranscriptionError, transcribe
 
-ACK_WAV = Path(__file__).parent / "assets" / "hey.wav"
+ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
 WAKE_WORD = "alexa"
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
 DETECTION_THRESHOLD = 0.5
 COOLDOWN_SECONDS = 2.0  # ignore re-triggers right as we resume listening
-QUERY_SECONDS = 6.0  # fixed-duration recording of the user's question after the wake word
+# How long to wait for the user to start talking before giving up.
+INITIAL_QUERY_TIMEOUT = 4.0
+FOLLOW_UP_TIMEOUT = 3.5  # long enough for a real follow-up, short enough to limit exposure to ambient noise
+MAX_FOLLOW_UP_TURNS = 5  # safety cap -- require a fresh "Alexa" after a while regardless
 
 
 def _listen_for_wake_word(model: Model, in_device: Device, last_trigger: float) -> float:
@@ -74,29 +77,60 @@ def _listen_for_wake_word(model: Model, in_device: Device, last_trigger: float) 
 
 
 def _handle_conversation(in_device: Device, out_device: Device) -> None:
-    query_wav = Path(tempfile.mktemp(suffix=".wav"))
-    reply_wav: Path | None = None
-    try:
-        play_wav(ACK_WAV, out_device)  # quick chime so the user knows to start talking
-        record_to_wav(in_device, query_wav, QUERY_SECONDS, SAMPLE_RATE, 1)
-        text, language = transcribe(query_wav)
-        print(f"Heard ({language}): {text}", flush=True)
-        if not text:
-            return
+    history: list[dict] | None = None
+    timeout = INITIAL_QUERY_TIMEOUT
+    turns = 0
+    while turns < MAX_FOLLOW_UP_TURNS:
+        turns += 1
+        query_wav = Path(tempfile.mktemp(suffix=".wav"))
+        reply_wav: Path | None = None
+        try:
+            # Play the chime and WAIT for it to finish before recording starts --
+            # never record while our own audio is playing, or the mic picks up
+            # our own chime/reply as if it were user speech (confirmed: this
+            # was corrupting transcriptions and confusing the silence-detector
+            # into cutting turns short). No AEC hardware on this mic, so strict
+            # turn-taking (we talk, then we listen) is the only reliable option.
+            play_wav(ACK_WAV, out_device)
 
-        reply = ask(text, language)
-        print(f"Claude: {reply}", flush=True)
+            t0 = time.monotonic()
+            recorded = record_until_silence(
+                in_device, query_wav, SAMPLE_RATE, 1, initial_timeout=timeout
+            )
+            t1 = time.monotonic()
+            if recorded is None:
+                break  # nothing said -- end the conversation, back to wake-word listening
 
-        reply_wav = synthesize_reply(reply)
-        play_wav(reply_wav, out_device)
-    except (TranscriptionError, BrainError, RecordingFailed, PlaybackFailed) as exc:
-        print(f"Conversation turn failed: {exc}", file=sys.stderr, flush=True)
-    except Exception as exc:
-        print(f"Unexpected error handling conversation: {exc!r}", file=sys.stderr, flush=True)
-    finally:
-        query_wav.unlink(missing_ok=True)
-        if reply_wav is not None:
-            reply_wav.unlink(missing_ok=True)
+            text, language = transcribe(query_wav)
+            t2 = time.monotonic()
+            print(f"Heard ({language}): {text}", flush=True)
+            if not text:
+                break
+
+            reply, history = ask(text, language, history)
+            t3 = time.monotonic()
+            print(f"Claude: {reply}", flush=True)
+
+            reply_wav = synthesize_reply(reply)
+            t4 = time.monotonic()
+            print(
+                f"[timing] record={t1 - t0:.1f}s transcribe={t2 - t1:.1f}s "
+                f"ask={t3 - t2:.1f}s synthesize={t4 - t3:.1f}s",
+                flush=True,
+            )
+
+            play_wav(reply_wav, out_device)
+        except (TranscriptionError, BrainError, RecordingFailed, PlaybackFailed) as exc:
+            print(f"Conversation turn failed: {exc}", file=sys.stderr, flush=True)
+            break
+        except Exception as exc:
+            print(f"Unexpected error handling conversation: {exc!r}", file=sys.stderr, flush=True)
+            break
+        finally:
+            query_wav.unlink(missing_ok=True)
+            if reply_wav is not None:
+                reply_wav.unlink(missing_ok=True)
+        timeout = FOLLOW_UP_TIMEOUT
 
 
 def main() -> None:

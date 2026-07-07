@@ -67,7 +67,7 @@ pi-voice-assistant/
 │   ├── ntp.py           # clock-trustworthiness check (fail closed if unsynced)
 │   └── gate.py          # entry point: run every minute via the gate .timer
 ├── assets/
-│   ├── hey.wav          # canned wake-word response clip
+│   ├── chime.wav        # ascending two-tone chime, played when the wake word triggers
 │   └── shabbat/         # pre-recorded Hebrew entrance/exit/warning announcements
 ├── systemd/
 │   ├── pi-voice-assistant.service        # wake_word_daemon.py (user unit)

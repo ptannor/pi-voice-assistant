@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import wave
 from pathlib import Path
 
@@ -73,3 +74,83 @@ def _do_record(device: Device, frames: int, sample_rate: int, channels: int) -> 
     )
     sd.wait()
     return audio
+
+
+# Empirically-tuned against this project's own mic testing (see check_mic_level.py-style
+# diagnostics): background noise sat around RMS 90-160, speech spiked to 700-4000+.
+# Device/room dependent -- may need retuning for a different mic (e.g. the Pi's).
+SILENCE_RMS_THRESHOLD = 250.0
+CHUNK_SAMPLES = 1600  # 100ms at 16kHz
+
+
+def record_until_silence(
+    device: Device,
+    filepath: Path,
+    sample_rate: int,
+    channels: int = 1,
+    *,
+    initial_timeout: float = 4.0,
+    silence_duration: float = 1.2,
+    max_seconds: float = 15.0,
+) -> Path | None:
+    """Record until the speaker falls silent, instead of a fixed duration.
+
+    Cuts dead air (no more waiting out a fixed window after the speaker's
+    already done) and avoids clipping the start of what they say (recording
+    starts immediately, not after some other fixed-duration step finishes).
+
+    Returns None (and writes no file) if no speech is detected at all within
+    `initial_timeout` -- lets callers distinguish "they said something and
+    finished" from "they didn't say anything," e.g. for deciding whether a
+    multi-turn conversation has ended.
+    """
+    channels = min(channels, device.max_input_channels) or 1
+    audio_queue: queue.Queue = queue.Queue()
+
+    def callback(indata, frames, time_info, status):
+        audio_queue.put(indata[:, 0].copy())
+
+    chunks: list[np.ndarray] = []
+    speech_started = False
+    silence_elapsed = 0.0
+    elapsed = 0.0
+    chunk_duration = CHUNK_SAMPLES / sample_rate
+
+    with sd.InputStream(
+        device=device.index,
+        channels=channels,
+        samplerate=sample_rate,
+        dtype="int16",
+        blocksize=CHUNK_SAMPLES,
+        callback=callback,
+    ):
+        while elapsed < max_seconds:
+            chunk = audio_queue.get()
+            elapsed += chunk_duration
+            rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+
+            if rms > SILENCE_RMS_THRESHOLD:
+                speech_started = True
+                silence_elapsed = 0.0
+            elif speech_started:
+                silence_elapsed += chunk_duration
+
+            if speech_started:
+                chunks.append(chunk)
+                if silence_elapsed >= silence_duration:
+                    break
+            elif elapsed >= initial_timeout:
+                return None
+
+    if not chunks:
+        return None
+
+    audio = np.concatenate(chunks)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(filepath), "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio.tobytes())
+
+    return filepath
