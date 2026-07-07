@@ -495,8 +495,13 @@ uv run python -m shabbat.gate
   `wake_word_daemon.py`'s "Alexa" is a pretrained placeholder, not the real thing
 - Confirm the full Claude conversation loop end-to-end on real hardware once
   a working Pi is available again (see [Wake word](#wake-word-alexa--talking-to-claude))
-- Replace the fixed 6-second question recording with real silence detection
-  (VAD), so it doesn't cut people off or wait out dead air
+- Evaluate dual wake words (one per language: English/Hebrew) as a replacement
+  for `brain/stt.py`'s forced-language-per-session approach. Would fully
+  eliminate any STT language-detection dependency, but needs a real
+  benchmark first: confirm two concurrent openWakeWord models don't reintroduce
+  the audio "input overflow" problem this project already hit once on the Pi 4
+  (real-time callback + CPU-bound inference contention) before committing to
+  training a second custom wake word
 - Timers
 - Spotify control
 - Voice-queryable zmanim ("when does Shabbat start?") — the underlying Hebcal

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from groq import Groq
 
 from .config import GROQ_API_KEY, STT_MODEL
-from .language import HEBREW_RE, detect_language
+from .language import HEBREW_RE
 
 _BRACKETED_RE = re.compile(r"^[\[(].*[\])]$")
 
@@ -32,45 +33,84 @@ def _is_sound_effect_caption(text: str) -> bool:
     return len(text.split()) >= 2 and text.isupper()
 
 
-def _call_groq(client: Groq, wav_path: Path, language: str | None = None) -> tuple[str, str]:
+# Whisper's well-documented hallucination on silence/near-silence -- it's
+# trained on a lot of subtitled video, so quiet or too-short audio (e.g. the
+# recording window opening right as the wake word finishes, before the user
+# has actually started talking) gets "transcribed" as one of a small set of
+# stock captions instead of coming back empty. Confirmed in testing: saying
+# "Alexa" without pausing before speaking produced a transcript of just
+# "תודה" ("thank you") with no such word actually said.
+_HALLUCINATION_PHRASES = {
+    "thank you", "thanks for watching", "thank you for watching", "bye", "you", "i'm sorry",
+    "תודה", "תודה רבה", "תודה שצפיתם",
+}
+
+
+def _is_likely_hallucination(text: str) -> bool:
+    return text.strip().lower().rstrip(".!") in _HALLUCINATION_PHRASES
+
+
+def _transcribe_forced(client: Groq, wav_path: Path, language: str) -> tuple[str, float]:
+    """Transcribe with `language` forced (not auto-detected).
+
+    Returns (text, confidence) -- confidence is the mean `avg_logprob` across
+    segments (closer to 0 = more confident; very negative = the model wasn't
+    sure this was really speech in this language).
+    """
     with open(wav_path, "rb") as f:
         result = client.audio.transcriptions.create(
             file=(wav_path.name, f.read()),
             model=STT_MODEL,
             response_format="verbose_json",
-            **({"language": language} if language else {}),
+            language=language,
         )
-    return result.text.strip(), result.language
+    segments = result.segments or []
+    confidence = sum(seg["avg_logprob"] for seg in segments) / len(segments) if segments else float("-inf")
+    return result.text.strip(), confidence
 
 
-def transcribe(wav_path: Path) -> tuple[str, str]:
+def transcribe(wav_path: Path, forced_language: str | None = None) -> tuple[str, str]:
     """Return (text, language) -- language is "he" or "en".
 
-    Passes Groq's own acoustic `language` field into detect_language() as the
-    primary signal (see language.py for why: it's detected from the audio
-    itself, so it stays correct even when Whisper transliterates Hebrew
-    speech into Latin-letter text instead of Hebrew script).
+    Auto-detection turned out unreliable for this household's short, casual
+    bilingual utterances -- confirmed in testing: Groq's own acoustic language
+    field sometimes says "English" for genuine Hebrew speech (not just
+    mis-rendering the text, actually misjudging the language), so there's no
+    reliable signal to even know a retry is needed. Instead of trusting
+    auto-detect at all, this forces a transcription in *both* languages (in
+    parallel, to keep latency down) and picks whichever one Whisper's own
+    confidence score (avg_logprob) says is the more coherent result -- a
+    signal from the model itself, not a text-pattern heuristic.
 
-    If the acoustic field says Hebrew but the transcribed text has no Hebrew
-    characters at all -- the signature of that transliteration bug -- retry
-    once with the language forced to Hebrew. Forcing the language (instead of
-    auto-detecting) makes Whisper commit to transcribing in that script
-    rather than guessing a Latin-letter phonetic rendering.
+    Pass `forced_language` ("he" or "en") to skip that dual-transcription
+    entirely and just force that language directly -- for locking a
+    conversation to whichever language its first turn determined, so
+    follow-up turns get the same forced-language accuracy benefit at half
+    the Groq calls, without needing a second wake word per language.
     """
     if not GROQ_API_KEY:
         raise TranscriptionError("GROQ_API_KEY not set -- add it to .env")
 
     client = Groq(api_key=GROQ_API_KEY)
     try:
-        text, acoustic_language = _call_groq(client, wav_path)
-        looks_transliterated = acoustic_language.strip().lower().startswith("he") and not HEBREW_RE.search(
-            text
-        )
-        if looks_transliterated:
-            text, acoustic_language = _call_groq(client, wav_path, language="he")
+        if forced_language:
+            text, _ = _transcribe_forced(client, wav_path, forced_language)
+            language = forced_language
+        else:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_en = pool.submit(_transcribe_forced, client, wav_path, "en")
+                future_he = pool.submit(_transcribe_forced, client, wav_path, "he")
+                text_en, confidence_en = future_en.result()
+                text_he, confidence_he = future_he.result()
+            text, language = (text_he, "he") if confidence_he >= confidence_en else (text_en, "en")
     except Exception as exc:
         raise TranscriptionError(f"Groq transcription failed: {exc}") from exc
 
-    if _is_sound_effect_caption(text):
+    # Defensive final check: trust an unambiguous Hebrew script even if the
+    # English-forced attempt somehow scored higher confidence (or was forced).
+    if language == "en" and HEBREW_RE.search(text):
+        language = "he"
+
+    if _is_sound_effect_caption(text) or _is_likely_hallucination(text):
         text = ""
-    return text, detect_language(text, acoustic_hint=acoustic_language)
+    return text, language
