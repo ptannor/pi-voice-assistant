@@ -45,6 +45,11 @@ HOUSEHOLD_LOCATION = _read_pi_config_value("HOUSEHOLD_LOCATION")
 # via `.pi-config` if that ever changes.
 HOUSEHOLD_TIMEZONE = _read_pi_config_value("HOUSEHOLD_TIMEZONE") or "Asia/Jerusalem"
 
+# Path to a custom-trained wake-word model (.onnx/.tflite), e.g. from
+# training "Mendy" via openWakeWord's Colab notebook -- see README's Wake
+# word section. None means fall back to the pretrained "alexa" model.
+WAKE_WORD_MODEL_PATH = _read_pi_config_value("WAKE_WORD_MODEL_PATH")
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 # Serper.dev web search -- 2,500 free queries, no card required, then

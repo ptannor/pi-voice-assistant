@@ -340,6 +340,27 @@ Picovoice discontinued its free tier in June 2026 and replaced it with a
 ("Menachem Mendel" / "Mendy") planned for a later milestone, also via
 openWakeWord.
 
+**Training a custom wake word (e.g. "Mendy"):** not something to do locally
+in this repo's own dev environment -- openWakeWord's pretrained models are
+trained on 30,000+ hours of negative audio (speech/noise/music) to avoid
+false triggers, and the training code needs a multi-GB PyTorch + TensorFlow
+stack (`pip install openwakeword[full]`) neither of which is practical to
+pull into a normal dev machine just to try one word. Do it via openWakeWord's
+own free-GPU Colab notebooks instead (linked from
+[openWakeWord's README](https://github.com/dscripka/openWakeWord)): the
+simple one-click notebook for a quick model, or `automatic_model_training.ipynb`
+for a higher-quality one. Either way you'll end up with a `.onnx` file --
+drop it anywhere in this repo (it's just a model file, no code changes
+needed) and point at it:
+```bash
+# add to .pi-config:
+WAKE_WORD_MODEL_PATH=/path/to/mendy.onnx
+```
+Leave it unset to keep using the pretrained "alexa" model. Once you have a
+real model, expect to tune `DETECTION_THRESHOLD` in `wake_word_daemon.py`
+against real speech -- a custom model's confidence distribution won't
+necessarily match "alexa"'s.
+
 The conversation itself (`brain/`) does need personal API keys:
 
 1. Copy `.env.example` to `.env` and fill in:

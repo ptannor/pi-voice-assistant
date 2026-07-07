@@ -24,13 +24,14 @@ from audio_check.devices import Device, find_input_device, find_output_device
 from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed
 from audio_check.player import play_wav
 from audio_check.recorder import record_until_silence
+from brain.config import WAKE_WORD_MODEL_PATH
 from brain.llm import BrainError, ask
 from brain.respond import synthesize_reply
 from brain.stt import TranscriptionError, transcribe
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
 GOODBYE_WAV = Path(__file__).parent / "assets" / "goodbye_chime.wav"
-WAKE_WORD = "alexa"
+WAKE_WORD = "alexa"  # pretrained fallback -- see _load_wake_word_model below
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
 DETECTION_THRESHOLD = 0.5
@@ -61,7 +62,34 @@ def _said_closing_phrase(text: str, language: str) -> bool:
     return any(phrase in lowered for phrase in phrases)
 
 
-def _listen_for_wake_word(model: Model, in_device: Device, last_trigger: float) -> float:
+def _load_wake_word_model() -> tuple[Model, str]:
+    """Returns (model, wake_word_key) -- wake_word_key is whatever key that
+    model's `.predict()` output uses for this wake word, which is only ever
+    `WAKE_WORD` ("alexa") for the pretrained model; a custom model's key is
+    derived from its own filename instead.
+
+    WAKE_WORD_MODEL_PATH (see brain/config.py) points at a custom-trained
+    model (e.g. "Mendy") -- training one requires openWakeWord's own Colab
+    notebook (30,000+ hours of negative audio and a multi-framework
+    torch+tensorflow training stack make local training impractical here;
+    see the README's Wake word section for the actual recipe). Until you've
+    trained and pointed at one, this always falls back to the pretrained
+    "alexa" model.
+    """
+    if WAKE_WORD_MODEL_PATH:
+        wake_word_key = Path(WAKE_WORD_MODEL_PATH).stem
+        model = Model(wakeword_models=[WAKE_WORD_MODEL_PATH], inference_framework="onnx")
+        return model, wake_word_key
+
+    openwakeword.utils.download_models(model_names=[WAKE_WORD])
+    # Force onnx: the tflite_runtime wheel available on some platforms (e.g. the
+    # Pi's aarch64 build) is compiled against NumPy 1.x and breaks under NumPy 2.x
+    # ("_ARRAY_API not found"). onnxruntime works correctly on both dev machine and Pi.
+    model = Model(wakeword_models=[WAKE_WORD], inference_framework="onnx")
+    return model, WAKE_WORD
+
+
+def _listen_for_wake_word(model: Model, wake_word_key: str, in_device: Device, last_trigger: float) -> float:
     """Block until the wake word is detected; return the new last_trigger time.
 
     Runs the InputStream inside this function's `with` block so it's fully
@@ -90,10 +118,10 @@ def _listen_for_wake_word(model: Model, in_device: Device, last_trigger: float) 
         while True:
             pcm = audio_queue.get()
             prediction = model.predict(pcm)
-            score = prediction.get(WAKE_WORD, 0.0)
+            score = prediction.get(wake_word_key, 0.0)
             now = time.monotonic()
             if score > DETECTION_THRESHOLD and (now - last_trigger) > COOLDOWN_SECONDS:
-                print(f"Wake word detected: {WAKE_WORD} (score={score:.2f})", flush=True)
+                print(f"Wake word detected: {wake_word_key} (score={score:.2f})", flush=True)
                 return now
 
 
@@ -197,21 +225,17 @@ def main() -> None:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    openwakeword.utils.download_models(model_names=[WAKE_WORD])
-    # Force onnx: the tflite_runtime wheel available on some platforms (e.g. the
-    # Pi's aarch64 build) is compiled against NumPy 1.x and breaks under NumPy 2.x
-    # ("_ARRAY_API not found"). onnxruntime works correctly on both dev machine and Pi.
-    model = Model(wakeword_models=[WAKE_WORD], inference_framework="onnx")
+    model, wake_word_key = _load_wake_word_model()
 
     print(
-        f"Listening for '{WAKE_WORD}' on '{in_device.name}' (index {in_device.index})...",
+        f"Listening for '{wake_word_key}' on '{in_device.name}' (index {in_device.index})...",
         flush=True,
     )
     print(f"Responses play on '{out_device.name}' (index {out_device.index})", flush=True)
 
     last_trigger = 0.0
     while True:
-        last_trigger = _listen_for_wake_word(model, in_device, last_trigger)
+        last_trigger = _listen_for_wake_word(model, wake_word_key, in_device, last_trigger)
         _handle_conversation(in_device, out_device)
         last_trigger = time.monotonic()  # restart cooldown from when we resume listening
 
