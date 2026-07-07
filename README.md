@@ -6,8 +6,10 @@ and speaker are actually working before building anything smarter on top.
 Milestone 1 covers device discovery, a 6.5-second recording, and playback,
 with error handling for the usual Pi audio headaches (missing devices,
 permissions, ALSA/PulseAudio/PipeWire confusion, sample rate mismatches).
-A minimal wake-word proof-of-concept (`wake_word_daemon.py` — "Alexa" triggers
-a canned response, no STT/LLM yet) is also in place; see [Wake
+
+`wake_word_daemon.py` now does real free-form conversation: "Alexa" triggers
+a recording of your question, which goes through Claude and comes back as
+spoken audio — in whichever of English/Hebrew you actually spoke. See [Wake
 word](#wake-word-alexa) below.
 
 > **What's actually been tested:** the full record → save → playback round
@@ -41,7 +43,7 @@ word](#wake-word-alexa) below.
 ```
 pi-voice-assistant/
 ├── main.py              # entry point
-├── wake_word_daemon.py  # always-on: "Alexa" -> canned "hey" response (see below)
+├── wake_word_daemon.py  # always-on: "Alexa" -> record question -> Claude -> spoken reply
 ├── audio_check/
 │   ├── config.py        # sample rate, channels, duration, device name hints
 │   ├── devices.py       # enumerate & select input/output devices
@@ -49,6 +51,15 @@ pi-voice-assistant/
 │   ├── player.py        # WAV -> playback
 │   ├── errors.py        # friendly exception types
 │   └── cli.py           # CLI commands + interactive menu
+├── brain/
+│   ├── config.py        # loads ANTHROPIC_API_KEY / GROQ_API_KEY from .env
+│   ├── stt.py           # speech-to-text via Groq's hosted Whisper (auto EN/HE detection)
+│   ├── llm.py           # conversational reply via Anthropic's Claude API
+│   └── respond.py       # picks Hebrew/English TTS voice from the reply text, synthesizes it
+├── hebrew_tts/
+│   ├── nakdan.py         # adds nikud via Dicta's free Nakdan API (rare/traditional text only)
+│   ├── pronunciation.py  # per-word corrections for Nakdan's mistakes
+│   └── synth.py          # Edge TTS synthesis (Hebrew + English voices)
 ├── shabbat/
 │   ├── config.py        # location (from .pi-config), warning offsets, message text
 │   ├── hebcal_client.py # fetch + cache candle-lighting/havdalah/Yom Tov data
@@ -64,7 +75,8 @@ pi-voice-assistant/
 │   └── pi-voice-assistant-gate.timer     # runs the gate checker every minute
 ├── docs/specs/          # design specs written before implementing risky features
 ├── recordings/          # test WAV output (gitignored)
-├── pyproject.toml       # dependencies (numpy, sounddevice, openwakeword)
+├── .env.example         # template for ANTHROPIC_API_KEY / GROQ_API_KEY -- copy to .env
+├── pyproject.toml       # dependencies
 └── uv.lock
 ```
 
@@ -317,37 +329,57 @@ env -u UV_INDEX uv sync
 (add more `-u` flags for any other `UV_INDEX_*` variables your setup sets),
 then confirm the lockfile only references `pypi.org` before committing.
 
-## Wake word ("Alexa")
+## Wake word ("Alexa") + talking to Claude
 
-`wake_word_daemon.py` listens continuously for the wake word **"Alexa"** and
-plays a canned "hey" response when it hears it — no speech-to-text, no LLM,
-just proving the always-on detect-and-respond loop works. This uses
-[openWakeWord](https://github.com/dscripka/openWakeWord)'s free, fully
-open-source pretrained "alexa" model — **no account, no API key, no signup**
-required at all, unlike Porcupine (which was the original choice for this
-proof-of-concept using its "jarvis" keyword, until Picovoice discontinued
-its free tier in June 2026 and replaced it with a 7-day trial). "Alexa" is a
-placeholder for the real custom-trained wake words ("Menachem Mendel" /
-"Mendy") planned for a later milestone, also via openWakeWord.
+`wake_word_daemon.py` listens continuously for the wake word **"Alexa"**.
+When it hears it: plays a short acknowledgment chime, records ~6 seconds of
+your question, transcribes it (auto-detecting English or Hebrew), sends it to
+Claude, and speaks the reply back — in whichever language you spoke. This
+uses [openWakeWord](https://github.com/dscripka/openWakeWord)'s free, fully
+open-source pretrained "alexa" model for wake-word detection — **no account,
+no API key, no signup** required for that part, unlike Porcupine (the
+original choice for this proof-of-concept using its "jarvis" keyword, until
+Picovoice discontinued its free tier in June 2026 and replaced it with a
+7-day trial). "Alexa" is a placeholder for the real custom-trained wake words
+("Menachem Mendel" / "Mendy") planned for a later milestone, also via
+openWakeWord.
 
-**Run it** (no setup beyond `uv sync` — model files download automatically
-on first run):
+The conversation itself (`brain/`) does need two personal API keys:
+
+1. Copy `.env.example` to `.env` and fill in:
+   - `ANTHROPIC_API_KEY` — from [console.anthropic.com](https://console.anthropic.com)
+     (Claude generates the reply)
+   - `GROQ_API_KEY` — from [console.groq.com](https://console.groq.com)
+     (Groq's hosted Whisper does speech-to-text; chosen over OpenAI's own
+     Whisper API for cost/speed, and over self-hosting ivrit.ai's
+     Hebrew-tuned models — better Hebrew accuracy, but Hebrew-only and
+     requires running your own GPU endpoint, not worth the ops overhead here)
+2. `.env` is gitignored — never commit real keys. **Personal keys only**:
+   this is a personal public repo, not Check Point work, so never point
+   these at a corporate LLM gateway or credential.
+
+**Run it**:
 
 ```bash
 uv run wake_word_daemon.py
 ```
 
-Say "Alexa" — you should hear the canned response play back.
+Say "Alexa", wait for the chime, then ask your question.
 
-**Verification status:** the mic-capture and playback pipeline is confirmed
-working (real audio flows through at the correct 16kHz format, response WAV
-plays correctly), but actual wake-word *detection* with a real human voice
-has not yet been confirmed — testing with macOS's synthetic TTS voice didn't
-trigger it, which may simply mean the model needs real speech rather than
-indicating a bug. If it doesn't trigger for you, check: the mic's physical
-gain isn't turned down (a real issue hit earlier in this project), you're
-speaking at a normal distance/volume, and the terminal actually printed
-`Listening for 'alexa' on '...'...` before you spoke.
+**Verification status:** the mic-capture, recording, and playback pipeline is
+confirmed working, and the STT → Claude → TTS chain (`brain/`) has been
+exercised locally with mocked/missing keys to confirm clean error handling —
+but the full conversational loop has **not yet been run end-to-end on real
+hardware**, since the Pi this was developed on died mid-session (see the
+project's own troubleshooting history) and its replacement isn't set up yet.
+Once a Pi is available again: confirm wake-word detection still triggers on
+real speech (this was previously unconfirmed with synthetic TTS test audio,
+which may just mean the model needs real speech), then confirm a full
+question → Claude reply → spoken response round trip in both languages.
+If wake-word detection doesn't trigger, check: the mic's physical gain isn't
+turned down (a real issue hit earlier in this project), you're speaking at a
+normal distance/volume, and the terminal printed `Listening for 'alexa' on
+'...'...` before you spoke.
 
 ## Running as a background service
 
@@ -377,8 +409,13 @@ Note `ExecStart` uses the **absolute path** to `uv`
 (`/home/<PI_USER>/.local/bin/uv`) rather than relying on `PATH` — systemd
 services start with an even more minimal environment than a non-interactive
 SSH session, so the same PATH issue described above applies here too, just
-with no shell to add a workaround line to. No secrets/`.env` needed for this
-service — openWakeWord requires no account or API key at all.
+with no shell to add a workaround line to.
+
+This service does need `.env` (see [Wake word](#wake-word-alexa--talking-to-claude)
+above) — `WorkingDirectory` is set to the repo root, so `python-dotenv` finds
+it there automatically, same as running it manually. `.env` is gitignored, so
+`git pull`/`update-pi.sh` never touches it — create it directly on the Pi
+once, by hand, the same way you set up `.pi-config`.
 
 Check on it:
 
@@ -455,7 +492,10 @@ uv run python -m shabbat.gate
 
 - Custom-trained wake words ("Menachem Mendel" / "Mendy" via openWakeWord) —
   `wake_word_daemon.py`'s "Alexa" is a pretrained placeholder, not the real thing
-- Hebrew + English speech recognition
+- Confirm the full Claude conversation loop end-to-end on real hardware once
+  a working Pi is available again (see [Wake word](#wake-word-alexa--talking-to-claude))
+- Replace the fixed 6-second question recording with real silence detection
+  (VAD), so it doesn't cut people off or wait out dead air
 - Timers
 - Spotify control
 - Voice-queryable zmanim ("when does Shabbat start?") — the underlying Hebcal

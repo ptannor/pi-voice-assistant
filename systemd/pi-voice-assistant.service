@@ -1,5 +1,5 @@
 [Unit]
-Description=pi-voice-assistant wake word daemon ("Alexa" -> canned "hey" response)
+Description=pi-voice-assistant wake word daemon ("Alexa" -> record question -> Claude -> spoken reply)
 # No explicit audio dependency needed -- PipeWire starts on demand via socket
 # activation when this (or any client) first connects to it.
 
