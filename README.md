@@ -50,6 +50,7 @@ pi-voice-assistant/
 │   ├── llm.py           # conversational reply via Anthropic's Claude API, tool-calling loop
 │   ├── tools.py         # tool definitions Claude can call (mostly stubs -- see docstring)
 │   ├── websearch.py     # real web search via Serper.dev, with a same-day cache
+│   ├── memory.py        # long-term household facts/preferences (see Memory section)
 │   └── respond.py       # picks Hebrew/English TTS voice from the reply text, synthesizes it
 ├── hebrew_tts/
 │   ├── nakdan.py         # adds nikud via Dicta's free Nakdan API (rare/traditional text only)
@@ -361,10 +362,12 @@ The conversation itself (`brain/`) does need personal API keys:
 3. (Optional) Add your household's location to `.pi-config` — the same
    gitignored, personal file `SHABBAT_GEONAMEID` lives in — so Claude
    defaults to location-appropriate answers (emergency services, "what's
-   nearby", etc.) instead of assuming the US:
+   nearby", etc.) instead of assuming the US, and knows the actual current
+   date/time (an LLM has no built-in clock otherwise):
    ```bash
    # add to .pi-config:
    HOUSEHOLD_LOCATION=Your City, Your Country
+   HOUSEHOLD_TIMEZONE=Your/IANA_Timezone   # defaults to Asia/Jerusalem if unset
    ```
    This nudges Claude toward the right country, but it's still an LLM: for
    anything safety-critical (e.g. a specific crisis hotline number), it's
@@ -394,6 +397,40 @@ If wake-word detection doesn't trigger, check: the mic's physical gain isn't
 turned down (a real issue hit earlier in this project), you're speaking at a
 normal distance/volume, and the terminal printed `Listening for 'alexa' on
 '...'...` before you spoke.
+
+## Long-term memory
+
+`brain/llm.py`'s `history` only lasts one conversation (it resets every time
+the wake word starts a new one) -- `brain/memory.py` is separate, persistent
+storage that carries across conversations, in two tiers, both under the
+gitignored `household_memory/` directory at the repo root (real household
+data, not something that belongs in a public repo):
+
+- **`core.txt`** -- small facts/preferences (names, allergies, house rules).
+  Plain text, one per line, injected into *every* request's system prompt, so
+  Claude doesn't need a tool to recall it out loud. Claude manages this
+  itself: a `remember` tool to save something worth keeping, a `forget` tool
+  to remove it. Curate by hand too, anytime -- open `household_memory/core.txt`
+  over SSH in any text editor and edit or delete a line directly. Keep this
+  tier small on purpose (a handful to a few dozen facts) -- everything in it
+  costs tokens on every single request, even ones that have nothing to do
+  with it.
+- **`reference/`** -- anything bigger: recipes, family member details,
+  birthdays, school/activity schedules, whatever else. *Not* injected into
+  every prompt (would bloat cost/latency for unrelated turns) -- instead
+  Claude searches it on demand with the `search_household_info` tool, which
+  does a plain per-word, case-insensitive search across every file under
+  `household_memory/reference/` and returns whole matching files. Add files
+  here directly, in whatever format/structure makes sense -- there's
+  deliberately no schema imposed yet.
+
+Open questions, intentionally not decided yet since there's no real data to
+design them against: how birthdays/schedules should actually be structured
+(plain text vs. CSV vs. native Excel -- the last would need adding `openpyxl`
+as a dependency), and whether the reference tier ever needs its own
+voice-driven write tool (right now it's curated by hand, matching how it's
+actually expected to be populated -- as files, not fact-by-fact through
+conversation).
 
 ## Running as a background service
 

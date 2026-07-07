@@ -37,6 +37,14 @@ def _read_pi_config_value(key: str) -> str | None:
 # ones. Set via `.pi-config`, never hardcoded here (see README).
 HOUSEHOLD_LOCATION = _read_pi_config_value("HOUSEHOLD_LOCATION")
 
+# IANA tz name (e.g. "Asia/Jerusalem") for telling Claude the actual current
+# date/time -- an LLM has no built-in clock, and without this it has no way
+# to know "today", let alone sanity-check something like a claimed showtime
+# against what time it actually is. Defaults to Israel since that's this
+# household's only supported timezone so far (see SHABBAT_ISRAEL); override
+# via `.pi-config` if that ever changes.
+HOUSEHOLD_TIMEZONE = _read_pi_config_value("HOUSEHOLD_TIMEZONE") or "Asia/Jerusalem"
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 # Serper.dev web search -- 2,500 free queries, no card required, then

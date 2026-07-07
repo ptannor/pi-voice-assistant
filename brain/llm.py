@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import anthropic
 
-from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL, HOUSEHOLD_LOCATION
+from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL, HOUSEHOLD_LOCATION, HOUSEHOLD_TIMEZONE
 from .language import LANGUAGE_NAMES
+from .memory import memory_prompt_block
 from .tools import TOOLS, execute_tool
 
 _LOCATION_PROMPT_LINE = (
@@ -45,8 +48,39 @@ spoke English, reply in English; if they spoke Hebrew, reply in Hebrew.
 
 Use the available tools for anything they cover. Don't claim to have done
 something physical/real-world, or given specific factual info you don't
-actually have (like today's zmanim or parsha), unless a tool result actually
-confirms it.
+actually have (like today's zmanim or parsha, or a movie's exact showtime,
+theater number, or running time), unless a tool result actually states that
+exact detail. A web search snippet is usually a list of titles or a vague
+description, not precise showtimes -- if you don't have the exact number,
+say plainly which part you know and which you don't (e.g. "it's playing
+today, but I don't have the exact time") instead of stating a specific-
+sounding time or number you're inferring or guessing.
+
+When the user shares something worth remembering for future conversations --
+names, allergies, recurring preferences, house rules -- use the remember
+tool to save it, without making a big deal of it (a brief acknowledgment is
+enough). If they ask you to forget something, use the forget tool. Don't
+save something as a permanent memory just because it came up once in
+passing; save it when it's clearly meant to stick.
+
+There's also a household reference library (recipes, family member details,
+birthdays, school/activity schedules, and more) too big to keep in context by
+default -- use the search_household_info tool to look something up from it
+whenever a question sounds like it could be answered from that kind of
+detail, rather than assuming you don't have it.
+
+If a web_search only gets you a partial answer (e.g. a list of movies but not
+showtimes), don't tell the user to go check a website or app themselves --
+you have the tool to look it up, so either search again with a more specific
+query, or if you're missing something only the user knows (which movie,
+which day), ask that one question and then search once you have it. Treat a
+suspiciously short or generic-looking list as incomplete, not final -- e.g.
+for "what's playing at a cinema" a handful of genre-sounding words is a sign
+you're reading a noisy snippet, not the real lineup (a real multiplex usually
+has ~8-12 films running). Re-search with different phrasing rather than
+reporting that short list as the answer. But finishing the task never means
+inventing a specific fact your search results don't actually contain -- see
+above.
 
 Don't habitually end every reply with "anything else I can help with?" out of
 politeness -- only ask a follow-up question when you genuinely need more
@@ -58,7 +92,9 @@ listing your features or capabilities unless they actually asked what you can
 do. Match the weight of your reply to the weight of the question.
 """
 
-_MAX_TOOL_ROUNDS = 3  # safety cap against a runaway tool-call loop
+_MAX_TOOL_ROUNDS = 4  # safety cap against a runaway tool-call loop -- a real
+# answer sometimes needs 2-3 searches (broad query, then a more specific
+# retry), so this leaves a bit of headroom before the round-cap fallback below
 
 # Defense in depth alongside the system prompt's "no markdown/URLs" instruction
 # -- confirmed Claude doesn't reliably follow that instruction alone (a crisis
@@ -103,6 +139,21 @@ class BrainError(Exception):
     pass
 
 
+def _current_datetime_line() -> str:
+    # An LLM has no built-in clock -- without this, it has no way to know
+    # what "today"/"tomorrow" even means, let alone sanity-check a claim like
+    # a showtime against what time it actually is (confirmed: asked to
+    # explain a "10 a.m. today" showtime at 11 p.m., Claude admitted it had
+    # no idea what the current date or time was).
+    now = datetime.now(ZoneInfo(HOUSEHOLD_TIMEZONE))
+    return (
+        f"\nRight now it's {now.strftime('%A, %B %-d, %Y, %-I:%M %p')} "
+        f"({HOUSEHOLD_TIMEZONE}). Use this for anything relative (today, "
+        "tomorrow, in an hour) and to sanity-check any date or time before "
+        "stating it.\n"
+    )
+
+
 def ask(user_text: str, language: str, history: list[dict] | None = None) -> tuple[str, list[dict]]:
     """`language` is "he" or "en" (see brain/language.py).
 
@@ -115,13 +166,18 @@ def ask(user_text: str, language: str, history: list[dict] | None = None) -> tup
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     language_name = LANGUAGE_NAMES[language]
+    # Computed fresh per call (not baked into the static SYSTEM_PROMPT, which
+    # is built once at import time) so a long-running daemon always gives
+    # Claude the actual current time, and a fact remembered mid-conversation
+    # is visible on the very next turn, not just from process restart.
+    system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block()
     messages = (history or []) + [
         {"role": "user", "content": f"[The user spoke in {language_name}] {user_text}"}
     ]
 
     try:
         response = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=300, system=SYSTEM_PROMPT, tools=TOOLS, messages=messages
+            model=CLAUDE_MODEL, max_tokens=300, system=system_prompt, tools=TOOLS, messages=messages
         )
         rounds = 0
         while response.stop_reason == "tool_use" and rounds < _MAX_TOOL_ROUNDS:
@@ -138,12 +194,34 @@ def ask(user_text: str, language: str, history: list[dict] | None = None) -> tup
             ]
             messages.append({"role": "user", "content": tool_results})
             response = client.messages.create(
-                model=CLAUDE_MODEL, max_tokens=300, system=SYSTEM_PROMPT, tools=TOOLS, messages=messages
+                model=CLAUDE_MODEL, max_tokens=300, system=system_prompt, tools=TOOLS, messages=messages
+            )
+
+        if response.stop_reason == "tool_use":
+            # Hit the round cap while Claude still wanted to call another
+            # tool. That response's text (if any) is just in-progress
+            # "here's what I'll try next" narration, not a real answer --
+            # confirmed: text like "Let me search more directly for..." got
+            # read aloud verbatim once. Discard it and force one final,
+            # tool-free turn on the same history so Claude commits to its
+            # best answer from what it's already gathered.
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=300,
+                system=system_prompt,
+                tools=TOOLS,
+                tool_choice={"type": "none"},
+                messages=messages,
             )
     except Exception as exc:
         raise BrainError(f"Claude request failed: {exc}") from exc
 
     reply = "".join(block.text for block in response.content if block.type == "text").strip()
+    if not reply:
+        # Confirmed possible (though rare) when tool_choice=none is forced
+        # above with little else to go on -- silence is worse than an
+        # explicit, honest "couldn't find it".
+        reply = "לא הצלחתי למצוא תשובה ברורה לזה, סליחה." if language == "he" else "Sorry, I couldn't find a clear answer to that."
     reply = _strip_voice_unfriendly_formatting(reply)
     messages.append({"role": "assistant", "content": response.content})
     return reply, messages

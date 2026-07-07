@@ -19,6 +19,7 @@ for it and TOOLS is sent to the API as-is.
 """
 from __future__ import annotations
 
+from . import memory
 from .language import LANGUAGE_NAMES
 from .websearch import WebSearchError, search
 
@@ -155,6 +156,50 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    # Real (not a stub) -- see memory.py. Already-remembered facts are listed
+    # directly in the system prompt, so there's no separate "list memories"
+    # tool -- only mutation needs one.
+    {
+        "name": "remember",
+        "description": (
+            "Save a fact or preference about this household to remember in future "
+            "conversations, not just this one -- e.g. names, allergies, recurring "
+            "preferences, house rules. Use it when the user shares something worth "
+            "persisting long-term, or explicitly asks you to remember something."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"fact": {"type": "string", "description": "The fact to remember, written plainly."}},
+            "required": ["fact"],
+        },
+    },
+    {
+        "name": "forget",
+        "description": "Remove a previously remembered fact, when the user asks you to forget something.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Text identifying which remembered fact to remove."}
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_household_info",
+        "description": (
+            "Search a household reference library (recipes, family member details, "
+            "birthdays, school/activity schedules, and anything else added to it) for "
+            "something specific. Use this when asked about that kind of detail, rather "
+            "than relying on the smaller always-known facts alone."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for, e.g. a name or topic."}
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 # Tools not listed here default to both languages.
@@ -185,6 +230,15 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
             return search(tool_input["query"])
         except WebSearchError as exc:
             return f"Web search failed ({exc}). Tell the user you couldn't search right now."
+
+    if name == "remember":
+        return memory.remember(tool_input["fact"])
+
+    if name == "forget":
+        return memory.forget(tool_input["query"])
+
+    if name == "search_household_info":
+        return memory.search_household_info(tool_input["query"])
 
     return (
         f"The '{name}' feature isn't built yet. Tell the user plainly that this "
