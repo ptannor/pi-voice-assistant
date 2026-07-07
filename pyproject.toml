@@ -7,6 +7,13 @@ dependencies = [
     "numpy",
     "sounddevice",
     "openwakeword",
+    # Pinned below 1.24: onnxruntime 1.24-1.27 has a numeric regression on
+    # macOS ARM64 that silently breaks openWakeWord's onnx models -- a
+    # validated "Alexa" recording (confirmed via independent Whisper
+    # transcription) scored ~0.0002 on 1.27.0 but ~0.99 on 1.23.0, with no
+    # errors or warnings either way. Confirmed openwakeword only requires
+    # onnxruntime>=1.10.0,<2, so this pin is compatible.
+    "onnxruntime<1.24",
     "edge-tts",
     "groq",
     "anthropic",
