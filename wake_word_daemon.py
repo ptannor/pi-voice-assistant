@@ -29,6 +29,7 @@ from brain.respond import synthesize_reply
 from brain.stt import TranscriptionError, transcribe
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
+GOODBYE_WAV = Path(__file__).parent / "assets" / "goodbye_chime.wav"
 WAKE_WORD = "alexa"
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
@@ -38,6 +39,26 @@ COOLDOWN_SECONDS = 2.0  # ignore re-triggers right as we resume listening
 INITIAL_QUERY_TIMEOUT = 4.0
 FOLLOW_UP_TIMEOUT = 3.5  # long enough for a real follow-up, short enough to limit exposure to ambient noise
 MAX_FOLLOW_UP_TURNS = 5  # safety cap -- require a fresh "Alexa" after a while regardless
+
+# Explicit signals the user is done, checked against what they just said --
+# end the conversation immediately rather than waiting on the follow-up
+# timeout/turn cap.
+_CLOSING_PHRASES_EN = (
+    "thanks", "thank you", "that's all", "that's it", "goodbye", "bye",
+    "nothing else", "i'm done", "im done", "that'll be all", "no thanks",
+    "no thank you", "nope", "nah", "forget it", "never mind", "nevermind",
+    "i'm good", "im good", "that's fine", "all good", "we're good",
+)
+_CLOSING_PHRASES_HE = (
+    "תודה", "זהו", "זה הכל", "להתראות", "ביי", "נגמר",
+    "לא תודה", "לא צריך", "עזוב", "בסדר גמור", "מספיק",
+)
+
+
+def _said_closing_phrase(text: str, language: str) -> bool:
+    lowered = text.lower()  # no-op for Hebrew (no letter case), normalizes English
+    phrases = _CLOSING_PHRASES_HE if language == "he" else _CLOSING_PHRASES_EN
+    return any(phrase in lowered for phrase in phrases)
 
 
 def _listen_for_wake_word(model: Model, in_device: Device, last_trigger: float) -> float:
@@ -80,6 +101,12 @@ def _handle_conversation(in_device: Device, out_device: Device) -> None:
     history: list[dict] | None = None
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0
+    # Locked to whichever language the first turn detects -- every later turn
+    # forces that same language directly (see brain/stt.py's `forced_language`)
+    # instead of re-running the dual-language detection each time. Cheaper,
+    # and gets the full forced-language accuracy benefit for the whole
+    # conversation without needing a second wake word per language.
+    session_language: str | None = None
     while turns < MAX_FOLLOW_UP_TURNS:
         turns += 1
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
@@ -91,6 +118,13 @@ def _handle_conversation(in_device: Device, out_device: Device) -> None:
             # was corrupting transcriptions and confusing the silence-detector
             # into cutting turns short). No AEC hardware on this mic, so strict
             # turn-taking (we talk, then we listen) is the only reliable option.
+            # (A wake-word-only "barge-in" during playback was tried and
+            # reverted -- it self-triggered on bleed from our own reply audio,
+            # since there's no acoustic echo cancellation to tell our own
+            # voice apart from the user's. Real barge-in needs either AEC
+            # (software, e.g. WebRTC's AEC3, or an AEC-capable mic/speaker) to
+            # cancel the known reply signal out of the mic input before
+            # running wake-word detection on what's left.)
             play_wav(ACK_WAV, out_device)
 
             t0 = time.monotonic()
@@ -101,7 +135,8 @@ def _handle_conversation(in_device: Device, out_device: Device) -> None:
             if recorded is None:
                 break  # nothing said -- end the conversation, back to wake-word listening
 
-            text, language = transcribe(query_wav)
+            text, language = transcribe(query_wav, forced_language=session_language)
+            session_language = language
             t2 = time.monotonic()
             print(f"Heard ({language}): {text}", flush=True)
             if not text:
@@ -120,6 +155,18 @@ def _handle_conversation(in_device: Device, out_device: Device) -> None:
             )
 
             play_wav(reply_wav, out_device)
+
+            if _said_closing_phrase(text, language):
+                break  # explicit "thanks"/"bye" etc. -- end right away
+
+            # Keep listening (silently -- no spoken "anything else?" prompt,
+            # that caused an awkward double-ask with whatever Claude itself
+            # said) only when Claude's own reply is a genuine question,
+            # meaning the thread is actually still open. A plain, closed
+            # answer ("Of course I do!") has nothing left open, so end there
+            # instead of leaving the mic on for no reason.
+            if not reply.rstrip().endswith("?"):
+                break
         except (TranscriptionError, BrainError, RecordingFailed, PlaybackFailed) as exc:
             print(f"Conversation turn failed: {exc}", file=sys.stderr, flush=True)
             break
@@ -131,6 +178,14 @@ def _handle_conversation(in_device: Device, out_device: Device) -> None:
             if reply_wav is not None:
                 reply_wav.unlink(missing_ok=True)
         timeout = FOLLOW_UP_TIMEOUT
+
+    # Every exit from the loop above (silence timeout, closing phrase, turn
+    # cap, or an error) falls through to here -- one clear signal that it's
+    # stopped listening, distinct from the ascending "now listening" chime.
+    try:
+        play_wav(GOODBYE_WAV, out_device)
+    except PlaybackFailed as exc:
+        print(f"Goodbye chime failed: {exc}", file=sys.stderr, flush=True)
 
 
 def main() -> None:
