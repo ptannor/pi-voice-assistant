@@ -358,6 +358,19 @@ The conversation itself (`brain/`) does need personal API keys:
 2. `.env` is gitignored — never commit real keys. **Personal keys only**:
    this is a personal public repo, not Check Point work, so never point
    these at a corporate LLM gateway or credential.
+3. (Optional) Add your household's location to `.pi-config` — the same
+   gitignored, personal file `SHABBAT_GEONAMEID` lives in — so Claude
+   defaults to location-appropriate answers (emergency services, "what's
+   nearby", etc.) instead of assuming the US:
+   ```bash
+   # add to .pi-config:
+   HOUSEHOLD_LOCATION=Your City, Your Country
+   ```
+   This nudges Claude toward the right country, but it's still an LLM: for
+   anything safety-critical (e.g. a specific crisis hotline number), it's
+   instructed to say so and point to local emergency services rather than
+   guess, instead of confidently stating a number it isn't sure is current
+   or correct for your location.
 
 **Run it**:
 
