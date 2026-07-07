@@ -9,3 +9,4 @@ recordings/*.wav
 .env
 shabbat_cache.json
 shabbat_state.json
+.web_search_cache.json

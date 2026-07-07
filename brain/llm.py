@@ -55,7 +55,7 @@ def ask(user_text: str, language: str, history: list[dict] | None = None) -> tup
                 {
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": execute_tool(block.name, language),
+                    "content": execute_tool(block.name, language, block.input),
                 }
                 for block in response.content
                 if block.type == "tool_use"

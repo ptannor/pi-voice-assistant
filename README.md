@@ -45,9 +45,11 @@ pi-voice-assistant/
 │   ├── errors.py        # friendly exception types
 │   └── cli.py           # CLI commands + interactive menu
 ├── brain/
-│   ├── config.py        # loads ANTHROPIC_API_KEY / GROQ_API_KEY from .env
+│   ├── config.py        # loads ANTHROPIC_API_KEY / GROQ_API_KEY / SERPER_API_KEY from .env
 │   ├── stt.py           # speech-to-text via Groq's hosted Whisper (auto EN/HE detection)
-│   ├── llm.py           # conversational reply via Anthropic's Claude API
+│   ├── llm.py           # conversational reply via Anthropic's Claude API, tool-calling loop
+│   ├── tools.py         # tool definitions Claude can call (mostly stubs -- see docstring)
+│   ├── websearch.py     # real web search via Serper.dev, with a same-day cache
 │   └── respond.py       # picks Hebrew/English TTS voice from the reply text, synthesizes it
 ├── hebrew_tts/
 │   ├── nakdan.py         # adds nikud via Dicta's free Nakdan API (rare/traditional text only)
@@ -337,7 +339,7 @@ Picovoice discontinued its free tier in June 2026 and replaced it with a
 ("Menachem Mendel" / "Mendy") planned for a later milestone, also via
 openWakeWord.
 
-The conversation itself (`brain/`) does need two personal API keys:
+The conversation itself (`brain/`) does need personal API keys:
 
 1. Copy `.env.example` to `.env` and fill in:
    - `ANTHROPIC_API_KEY` — from [console.anthropic.com](https://console.anthropic.com)
@@ -347,6 +349,12 @@ The conversation itself (`brain/`) does need two personal API keys:
      Whisper API for cost/speed, and over self-hosting ivrit.ai's
      Hebrew-tuned models — better Hebrew accuracy, but Hebrew-only and
      requires running your own GPU endpoint, not worth the ops overhead here)
+   - `SERPER_API_KEY` — from [serper.dev](https://serper.dev) (real web
+     search, e.g. "what movies are playing at X" — 2,500 free queries, no
+     card required, then pay-as-you-go from $0.001/query; see
+     `brain/websearch.py` for why this over Anthropic's native web search
+     tool or Brave's API). Optional — only needed for the `web_search` tool;
+     everything else works without it.
 2. `.env` is gitignored — never commit real keys. **Personal keys only**:
    this is a personal public repo, not Check Point work, so never point
    these at a corporate LLM gateway or credential.
