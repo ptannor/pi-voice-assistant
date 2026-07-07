@@ -68,7 +68,12 @@ def search(query: str) -> str:
     except (OSError, ValueError) as exc:
         raise WebSearchError(f"Serper request failed: {exc}") from exc
 
-    organic = data.get("organic", [])[:5]
+    # Serper returns up to ~10 organic results per query by default; keeping
+    # only the top 5 was throwing away results that sometimes mattered --
+    # confirmed on a "what's playing at X cinema" query, where a cleaner
+    # title-dense snippet several results down got fully lost, and Claude
+    # answered off a noisier top-5 snippet instead.
+    organic = data.get("organic", [])[:10]
     if not organic:
         result = "No web results found."
     else:
