@@ -389,12 +389,19 @@ The conversation itself (`brain/`) does need personal API keys:
    # add to .pi-config:
    HOUSEHOLD_LOCATION=Your City, Your Country
    HOUSEHOLD_TIMEZONE=Your/IANA_Timezone   # defaults to Asia/Jerusalem if unset
+   HOUSEHOLD_NEARBY_AREAS=Nearby City 1, Nearby City 2 -- all a short drive away
    ```
    This nudges Claude toward the right country, but it's still an LLM: for
    anything safety-critical (e.g. a specific crisis hotline number), it's
    instructed to say so and point to local emergency services rather than
    guess, instead of confidently stating a number it isn't sure is current
-   or correct for your location.
+   or correct for your location. `HOUSEHOLD_NEARBY_AREAS` is optional but
+   worth setting if you're in a dense metro area -- without it, Claude
+   over-indexed on treating HOUSEHOLD_LOCATION as the *only* local place
+   (confirmed: asked about a real mall in a neighboring city, it got
+   confused and invented a claim that it must be a different, unverified
+   place, purely because the city name in the search results didn't match
+   HOUSEHOLD_LOCATION exactly).
 
 **Run it**:
 

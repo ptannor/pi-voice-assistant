@@ -37,6 +37,15 @@ def _read_pi_config_value(key: str) -> str | None:
 # ones. Set via `.pi-config`, never hardcoded here (see README).
 HOUSEHOLD_LOCATION = _read_pi_config_value("HOUSEHOLD_LOCATION")
 
+# Free-text list of nearby cities/areas that should be treated as local too
+# (e.g. "Ramat Gan, Bnei Brak, Petach Tikva, Kiryat Ono, Tel Aviv -- all
+# ~15 min away"). Without this, Claude over-indexed on HOUSEHOLD_LOCATION
+# being the *only* local place -- confirmed: asked about a mall in a
+# neighboring city, it got confused and invented a claim that search results
+# for that real mall must be about a different, unverified place, purely
+# because the city name didn't match HOUSEHOLD_LOCATION exactly.
+HOUSEHOLD_NEARBY_AREAS = _read_pi_config_value("HOUSEHOLD_NEARBY_AREAS")
+
 # IANA tz name (e.g. "Asia/Jerusalem") for telling Claude the actual current
 # date/time -- an LLM has no built-in clock, and without this it has no way
 # to know "today", let alone sanity-check something like a claimed showtime

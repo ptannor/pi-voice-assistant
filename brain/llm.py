@@ -7,17 +7,32 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 
-from .config import ANTHROPIC_API_KEY, CLAUDE_MODEL, HOUSEHOLD_LOCATION, HOUSEHOLD_TIMEZONE
+from .config import (
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
+    HOUSEHOLD_LOCATION,
+    HOUSEHOLD_NEARBY_AREAS,
+    HOUSEHOLD_TIMEZONE,
+)
 from .language import LANGUAGE_NAMES
 from .memory import memory_prompt_block
 from .tools import TOOLS, execute_tool
 
+_NEARBY_AREAS_CLAUSE = (
+    f" Nearby areas -- {HOUSEHOLD_NEARBY_AREAS} -- are close enough to treat "
+    "as local too, not a different region; a result about one of them is not "
+    "a mismatch just because the city name isn't the household's own."
+    if HOUSEHOLD_NEARBY_AREAS
+    else ""
+)
+
 _LOCATION_PROMPT_LINE = (
-    f"\nThe household is in {HOUSEHOLD_LOCATION}. Default to answers, "
-    "recommendations, and services relevant there rather than assuming the US "
-    "or anywhere else. If you're not fully certain of a specific, current "
-    "fact tied to this location (e.g. a phone number, address, or hours), use "
-    "the web_search tool to check it rather than reciting one from memory.\n"
+    f"\nThe household is in {HOUSEHOLD_LOCATION}.{_NEARBY_AREAS_CLAUSE} Default "
+    "to answers, recommendations, and services relevant there rather than "
+    "assuming the US or anywhere else. If you're not fully certain of a "
+    "specific, current fact tied to this location (e.g. a phone number, "
+    "address, or hours), use the web_search tool to check it rather than "
+    "reciting one from memory.\n"
     if HOUSEHOLD_LOCATION
     else ""
 )
@@ -48,13 +63,23 @@ spoke English, reply in English; if they spoke Hebrew, reply in Hebrew.
 
 Use the available tools for anything they cover. Don't claim to have done
 something physical/real-world, or given specific factual info you don't
-actually have (like today's zmanim or parsha, or a movie's exact showtime,
-theater number, or running time), unless a tool result actually states that
-exact detail. A web search snippet is usually a list of titles or a vague
-description, not precise showtimes -- if you don't have the exact number,
-say plainly which part you know and which you don't (e.g. "it's playing
-today, but I don't have the exact time") instead of stating a specific-
-sounding time or number you're inferring or guessing.
+actually have, unless a tool result actually states that exact detail --
+this applies broadly, to any precise-sounding number or fact (an exact
+showtime, theater number, running time, temperature, forecast, price,
+zmanim, parsha, anything), not just the examples given here. A web search
+snippet is often a vague description, not exact figures -- if you don't
+have the precise number, say plainly which part you know and which you
+don't (e.g. "it's playing today, but I don't have the exact time") instead
+of stating something specific-sounding that you're inferring or guessing.
+
+You will sometimes get a transcribed question with a garbled or
+unfamiliar-sounding name (speech-to-text mishears names it doesn't
+recognize, especially in Hebrew). If a search for that name turns up
+something with a very similar-sounding real name, treat that as very
+likely the same thing the user meant, rather than concluding they're two
+different things and inventing an explanation for the mismatch (e.g. don't
+assert that a garbled name refers to a different, unverified place/thing
+just because the spelling doesn't match exactly).
 
 When the user shares something worth remembering for future conversations --
 names, allergies, recurring preferences, house rules -- use the remember
