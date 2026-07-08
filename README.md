@@ -424,10 +424,10 @@ The conversation itself (`brain/`) does need personal API keys:
    HOUSEHOLD_FAMILY_NAMES_HE=שם1, שם2, שם3
    ```
    Confirmed this matters: without a hint, Whisper transcribed a real family
-   member's name ("Shalhevet") as "Shalhaavith"; with the hint, it came out
-   correct. Passed to Groq's Whisper API as a `prompt` (see brain/stt.py) --
-   biases transcription toward that vocabulary without needing to match a
-   real transcript.
+   member's uncommon name as a completely different, unrelated-sounding
+   word; with the hint, it came out correct. Passed to Groq's Whisper API as
+   a `prompt` (see brain/stt.py) -- biases transcription toward that
+   vocabulary without needing to match a real transcript.
 
 **Run it**:
 

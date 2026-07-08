@@ -61,9 +61,9 @@ WAKE_WORD_MODEL_PATH = _read_pi_config_value("WAKE_WORD_MODEL_PATH")
 
 # Comma-separated family member names, in each language they'd actually be
 # spoken/read in -- fed to Whisper as a transcription hint (see brain/stt.py)
-# so it's biased toward recognizing them correctly. Confirmed necessary:
-# "Shalhevet" (a real family member's name) got transcribed as "Shalhaavith"
-# with no hint at all.
+# so it's biased toward recognizing them correctly. Confirmed necessary: an
+# uncommon family member's name got transcribed as a completely different,
+# unrelated-sounding word with no hint at all.
 HOUSEHOLD_FAMILY_NAMES_EN = _read_pi_config_value("HOUSEHOLD_FAMILY_NAMES_EN")
 HOUSEHOLD_FAMILY_NAMES_HE = _read_pi_config_value("HOUSEHOLD_FAMILY_NAMES_HE")
 

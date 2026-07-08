@@ -12,8 +12,8 @@ from .language import HEBREW_RE
 
 # Whisper's `prompt` param biases transcription toward vocabulary it contains
 # -- doesn't need to be a real transcript, just representative text. Confirmed
-# useful: an unhinted transcription mangled a real family member's name
-# ("Shalhevet" -> "Shalhaavith").
+# useful: an unhinted transcription mangled a real family member's uncommon
+# name into a completely different, unrelated-sounding word.
 _FAMILY_NAME_PROMPTS = {
     "en": f"Family members: {HOUSEHOLD_FAMILY_NAMES_EN}." if HOUSEHOLD_FAMILY_NAMES_EN else None,
     "he": f"בני המשפחה: {HOUSEHOLD_FAMILY_NAMES_HE}." if HOUSEHOLD_FAMILY_NAMES_HE else None,
