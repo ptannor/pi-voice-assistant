@@ -92,12 +92,20 @@ def record_until_silence(
     initial_timeout: float = 4.0,
     silence_duration: float = 1.2,
     max_seconds: float = 15.0,
+    lead_in_seconds: float = 0.0,
 ) -> Path | None:
     """Record until the speaker falls silent, instead of a fixed duration.
 
     Cuts dead air (no more waiting out a fixed window after the speaker's
     already done) and avoids clipping the start of what they say (recording
     starts immediately, not after some other fixed-duration step finishes).
+
+    `lead_in_seconds` buffers that much audio from stream-open without
+    running silence detection on it, then folds it into the recording once
+    real speech is detected right after -- meant to cover a concurrently
+    playing ack chime, so someone who starts talking before the chime ends
+    isn't clipped, while the chime's own sound doesn't get mistaken for
+    speech (see wake_word_daemon.py's caller).
 
     Returns None (and writes no file) if no speech is detected at all within
     `initial_timeout` -- lets callers distinguish "they said something and
@@ -111,9 +119,11 @@ def record_until_silence(
         audio_queue.put(indata[:, 0].copy())
 
     chunks: list[np.ndarray] = []
+    lead_in_buffer: list[np.ndarray] = []
     speech_started = False
     silence_elapsed = 0.0
     elapsed = 0.0
+    lead_in_elapsed = 0.0
     chunk_duration = CHUNK_SAMPLES / sample_rate
 
     with sd.InputStream(
@@ -126,10 +136,19 @@ def record_until_silence(
     ):
         while elapsed < max_seconds:
             chunk = audio_queue.get()
+
+            if lead_in_elapsed < lead_in_seconds:
+                lead_in_elapsed += chunk_duration
+                lead_in_buffer.append(chunk)
+                continue
+
             elapsed += chunk_duration
             rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
 
             if rms > SILENCE_RMS_THRESHOLD:
+                if not speech_started and lead_in_buffer:
+                    chunks.extend(lead_in_buffer)
+                    lead_in_buffer = []
                 speech_started = True
                 silence_elapsed = 0.0
             elif speech_started:

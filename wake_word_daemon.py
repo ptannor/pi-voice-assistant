@@ -13,6 +13,8 @@ import queue
 import sys
 import tempfile
 import time
+import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import openwakeword
@@ -31,6 +33,18 @@ from brain.stt import TranscriptionError, transcribe
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
 GOODBYE_WAV = Path(__file__).parent / "assets" / "goodbye_chime.wav"
+
+
+def _wav_duration_seconds(path: Path) -> float:
+    with wave.open(str(path), "rb") as wf:
+        return wf.getnframes() / wf.getframerate()
+
+
+# Used as record_until_silence's lead_in_seconds -- someone who starts
+# talking right as the chime plays (instead of waiting for it to finish)
+# was getting clipped entirely, since recording only used to start once
+# play_wav() returned. See _handle_conversation below.
+ACK_DURATION_SECONDS = _wav_duration_seconds(ACK_WAV)
 WAKE_WORD = "alexa"  # pretrained fallback -- see _load_wake_word_model below
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
@@ -161,25 +175,34 @@ def _handle_conversation(
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
         reply_wav: Path | None = None
         try:
-            # Play the chime and WAIT for it to finish before recording starts --
-            # never record while our own audio is playing, or the mic picks up
-            # our own chime/reply as if it were user speech (confirmed: this
-            # was corrupting transcriptions and confusing the silence-detector
-            # into cutting turns short). No AEC hardware on this mic, so strict
-            # turn-taking (we talk, then we listen) is the only reliable option.
-            # (A wake-word-only "barge-in" during playback was tried and
-            # reverted -- it self-triggered on bleed from our own reply audio,
-            # since there's no acoustic echo cancellation to tell our own
-            # voice apart from the user's. Real barge-in needs either AEC
-            # (software, e.g. WebRTC's AEC3, or an AEC-capable mic/speaker) to
-            # cancel the known reply signal out of the mic input before
-            # running wake-word detection on what's left.)
-            play_wav(ACK_WAV, out_device)
-
+            # Start listening *while* the chime plays, instead of waiting for
+            # it to finish first -- someone who starts talking right on the
+            # chime (not after it) was getting the start of their question
+            # clipped entirely, since recording used to only begin once
+            # play_wav() returned. lead_in_seconds shields the chime's own
+            # sound from being mistaken for speech (or for the user going
+            # silent right after it), while still capturing anything they
+            # actually say during that window. This is not the same as the
+            # reply-audio barge-in that was tried and reverted elsewhere in
+            # this file: that self-triggered on bleed from a long, unknown-
+            # content TTS reply with no AEC to tell it apart from the user's
+            # voice. This chime is short, fixed, and known in advance, and is
+            # never treated as speech itself -- only real speech detected
+            # right after it gets kept.
             t0 = time.monotonic()
-            recorded = record_until_silence(
-                in_device, query_wav, SAMPLE_RATE, 1, initial_timeout=timeout
-            )
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                record_future = pool.submit(
+                    record_until_silence,
+                    in_device,
+                    query_wav,
+                    SAMPLE_RATE,
+                    1,
+                    initial_timeout=timeout,
+                    lead_in_seconds=ACK_DURATION_SECONDS,
+                )
+                ack_future = pool.submit(play_wav, ACK_WAV, out_device)
+                recorded = record_future.result()
+                ack_future.result()
             t1 = time.monotonic()
             if recorded is None:
                 break  # nothing said -- end the conversation, back to wake-word listening
