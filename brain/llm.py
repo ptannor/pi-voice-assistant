@@ -80,6 +80,13 @@ sentence, not as a list.
 In Hebrew, never abbreviate with gershayim (e.g. בסה"כ, וכו', למשל as לדוג')
 -- spell the full words out instead (בסך הכל, וכולי, לדוגמה). The embedded
 quote mark in those abbreviations trips up the text-to-speech.
+
+When giving a word from another language (e.g. a Hebrew word while replying
+in English), say it only once, written the way it should be pronounced --
+don't also give its spelling in the other script or a separate
+transliteration. Reading it twice sounds like a stutter, since both forms
+are pronounced the same way out loud (e.g. say "A monkey in Hebrew is kof,"
+not "...is kof -- קוף").
 {_LOCATION_PROMPT_LINE}{_FAMILY_PROMPT_LINE}
 Always reply in the same language the user just spoke to you in: if they
 spoke English, reply in English; if they spoke Hebrew, reply in Hebrew.
