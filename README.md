@@ -402,6 +402,19 @@ The conversation itself (`brain/`) does need personal API keys:
    confused and invented a claim that it must be a different, unverified
    place, purely because the city name in the search results didn't match
    HOUSEHOLD_LOCATION exactly).
+4. (Optional) Add family member names, in each language they're actually
+   spoken/read in, so speech-to-text is biased toward recognizing them
+   correctly:
+   ```bash
+   # add to .pi-config:
+   HOUSEHOLD_FAMILY_NAMES_EN=Name1, Name2, Name3
+   HOUSEHOLD_FAMILY_NAMES_HE=שם1, שם2, שם3
+   ```
+   Confirmed this matters: without a hint, Whisper transcribed a real family
+   member's name ("Shalhevet") as "Shalhaavith"; with the hint, it came out
+   correct. Passed to Groq's Whisper API as a `prompt` (see brain/stt.py) --
+   biases transcription toward that vocabulary without needing to match a
+   real transcript.
 
 **Run it**:
 

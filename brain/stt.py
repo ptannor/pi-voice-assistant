@@ -7,8 +7,17 @@ from pathlib import Path
 
 from groq import Groq
 
-from .config import GROQ_API_KEY, STT_MODEL
+from .config import GROQ_API_KEY, HOUSEHOLD_FAMILY_NAMES_EN, HOUSEHOLD_FAMILY_NAMES_HE, STT_MODEL
 from .language import HEBREW_RE
+
+# Whisper's `prompt` param biases transcription toward vocabulary it contains
+# -- doesn't need to be a real transcript, just representative text. Confirmed
+# useful: an unhinted transcription mangled a real family member's name
+# ("Shalhevet" -> "Shalhaavith").
+_FAMILY_NAME_PROMPTS = {
+    "en": f"Family members: {HOUSEHOLD_FAMILY_NAMES_EN}." if HOUSEHOLD_FAMILY_NAMES_EN else None,
+    "he": f"בני המשפחה: {HOUSEHOLD_FAMILY_NAMES_HE}." if HOUSEHOLD_FAMILY_NAMES_HE else None,
+}
 
 _BRACKETED_RE = re.compile(r"^[\[(].*[\])]$")
 
@@ -57,12 +66,17 @@ def _transcribe_forced(client: Groq, wav_path: Path, language: str) -> tuple[str
     segments (closer to 0 = more confident; very negative = the model wasn't
     sure this was really speech in this language).
     """
+    kwargs = {}
+    prompt = _FAMILY_NAME_PROMPTS.get(language)
+    if prompt:
+        kwargs["prompt"] = prompt
     with open(wav_path, "rb") as f:
         result = client.audio.transcriptions.create(
             file=(wav_path.name, f.read()),
             model=STT_MODEL,
             response_format="verbose_json",
             language=language,
+            **kwargs,
         )
     segments = result.segments or []
     confidence = sum(seg["avg_logprob"] for seg in segments) / len(segments) if segments else float("-inf")

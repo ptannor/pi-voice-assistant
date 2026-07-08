@@ -59,6 +59,14 @@ HOUSEHOLD_TIMEZONE = _read_pi_config_value("HOUSEHOLD_TIMEZONE") or "Asia/Jerusa
 # word section. None means fall back to the pretrained "alexa" model.
 WAKE_WORD_MODEL_PATH = _read_pi_config_value("WAKE_WORD_MODEL_PATH")
 
+# Comma-separated family member names, in each language they'd actually be
+# spoken/read in -- fed to Whisper as a transcription hint (see brain/stt.py)
+# so it's biased toward recognizing them correctly. Confirmed necessary:
+# "Shalhevet" (a real family member's name) got transcribed as "Shalhaavith"
+# with no hint at all.
+HOUSEHOLD_FAMILY_NAMES_EN = _read_pi_config_value("HOUSEHOLD_FAMILY_NAMES_EN")
+HOUSEHOLD_FAMILY_NAMES_HE = _read_pi_config_value("HOUSEHOLD_FAMILY_NAMES_HE")
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 # Serper.dev web search -- 2,500 free queries, no card required, then
