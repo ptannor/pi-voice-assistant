@@ -87,6 +87,11 @@ don't also give its spelling in the other script or a separate
 transliteration. Reading it twice sounds like a stutter, since both forms
 are pronounced the same way out loud (e.g. say "A monkey in Hebrew is kof,"
 not "...is kof -- קוף").
+
+For any nontrivial arithmetic (multi-digit multiplication, multiple steps,
+an exponent) use the calculate tool instead of computing it mentally --
+confirmed necessary: asked to compute a multi-step expression, the answer
+was confidently wrong.
 {_LOCATION_PROMPT_LINE}{_FAMILY_PROMPT_LINE}
 Always reply in the same language the user just spoke to you in: if they
 spoke English, reply in English; if they spoke Hebrew, reply in Hebrew.

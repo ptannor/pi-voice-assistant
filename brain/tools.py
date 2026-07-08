@@ -20,6 +20,7 @@ for it and TOOLS is sent to the API as-is.
 from __future__ import annotations
 
 from . import memory
+from .calculator import calculate
 from .language import LANGUAGE_NAMES
 from .websearch import WebSearchError, search
 
@@ -143,6 +144,26 @@ TOOLS = [
         "description": "Answer an incoming phone call.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    # Real (not a stub) -- see calculator.py
+    {
+        "name": "calculate",
+        "description": (
+            "Compute the exact result of an arithmetic expression (+ - * / // % **, "
+            "parentheses). Always use this for any nontrivial arithmetic instead of "
+            "computing it mentally -- e.g. multi-digit multiplication, anything with "
+            "several steps, or an exponent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "A Python-syntax arithmetic expression, e.g. '(53*72-23-15)**2'.",
+                }
+            },
+            "required": ["expression"],
+        },
+    },
     # Real (not a stub) -- see websearch.py
     {
         "name": "web_search",
@@ -224,6 +245,9 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
             f"This skill is only available in {allowed_name}. Tell the user, in "
             f"{LANGUAGE_NAMES[language]}, that they should try asking in {allowed_name} instead."
         )
+
+    if name == "calculate":
+        return calculate(tool_input["expression"])
 
     if name == "web_search":
         try:
