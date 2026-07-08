@@ -137,22 +137,25 @@ def _handle_conversation(
     in_device: Device,
     out_device: Device,
     initial_history: list[dict] | None = None,
-    initial_session_language: str | None = None,
-) -> tuple[list[dict] | None, str | None]:
-    """Returns (history, session_language) as they stood when the
-    conversation ended, so `main()` can offer them to the *next* call as a
-    continuation if a fresh "Alexa" comes in soon enough (see
-    CONTINUATION_WINDOW_SECONDS) -- otherwise this always starts blank.
+) -> list[dict] | None:
+    """Returns `history` as it stood when the conversation ended, so `main()`
+    can offer it to the *next* call as a continuation if a fresh "Alexa"
+    comes in soon enough (see CONTINUATION_WINDOW_SECONDS) -- otherwise this
+    always starts blank.
     """
     history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0
-    # Locked to whichever language the first turn detects -- every later turn
-    # forces that same language directly (see brain/stt.py's `forced_language`)
-    # instead of re-running the dual-language detection each time. Cheaper,
-    # and gets the full forced-language accuracy benefit for the whole
-    # conversation without needing a second wake word per language.
-    session_language: str | None = initial_session_language
+    # Locked to whichever language the first turn of *this* activation
+    # detects -- every later turn within the same activation forces that
+    # same language directly (see brain/stt.py's `forced_language`) instead
+    # of re-running the dual-language detection each time. Always starts
+    # fresh at None even when `initial_history` is continuing a prior
+    # conversation's topic -- confirmed necessary: reusing the *previous*
+    # activation's language here force-fed the wrong language into Whisper
+    # when the user switched languages between activations, making it seem
+    # like the assistant "got stuck" on Hebrew.
+    session_language: str | None = None
     while turns < MAX_FOLLOW_UP_TURNS:
         turns += 1
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
@@ -233,7 +236,7 @@ def _handle_conversation(
     except PlaybackFailed as exc:
         print(f"Goodbye chime failed: {exc}", file=sys.stderr, flush=True)
 
-    return history, session_language
+    return history
 
 
 def main() -> None:
@@ -256,19 +259,16 @@ def main() -> None:
     last_trigger = 0.0
     last_conversation_end = float("-inf")
     last_history: list[dict] | None = None
-    last_session_language: str | None = None
     while True:
         last_trigger = _listen_for_wake_word(model, wake_word_key, in_device, last_trigger)
 
         if time.monotonic() - last_conversation_end < CONTINUATION_WINDOW_SECONDS:
             print("Continuing previous conversation's context", flush=True)
-            initial_history, initial_session_language = last_history, last_session_language
+            initial_history = last_history
         else:
-            initial_history, initial_session_language = None, None
+            initial_history = None
 
-        last_history, last_session_language = _handle_conversation(
-            in_device, out_device, initial_history, initial_session_language
-        )
+        last_history = _handle_conversation(in_device, out_device, initial_history)
         last_conversation_end = time.monotonic()
         last_trigger = time.monotonic()  # restart cooldown from when we resume listening
 
