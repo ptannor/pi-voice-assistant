@@ -1,16 +1,9 @@
 # pi-voice-assistant
 
-Milestone 1 of a Raspberry Pi 4 voice assistant: verify that the microphone
-and speaker are actually working before building anything smarter on top.
-
-Milestone 1 covers device discovery, a 6.5-second recording, and playback,
-with error handling for the usual Pi audio headaches (missing devices,
-permissions, ALSA/PulseAudio/PipeWire confusion, sample rate mismatches).
-
-`wake_word_daemon.py` now does real free-form conversation: "Alexa" triggers
-a recording of your question, which goes through Claude and comes back as
-spoken audio — in whichever of English/Hebrew you actually spoke. See [Wake
-word](#wake-word-alexa) below.
+A Raspberry Pi 4 voice assistant. `wake_word_daemon.py` does real free-form
+conversation: "Alexa" triggers a recording of your question, which goes
+through Claude and comes back as spoken audio — in whichever of English/Hebrew
+you actually spoke. See [Wake word](#wake-word-alexa) below.
 
 > **What's actually been tested:** the full record → save → playback round
 > trip has been verified on the actual target hardware — a **Raspberry Pi 4
