@@ -10,6 +10,8 @@ import anthropic
 from .config import (
     ANTHROPIC_API_KEY,
     CLAUDE_MODEL,
+    HOUSEHOLD_FAMILY_NAMES_EN,
+    HOUSEHOLD_FAMILY_NAMES_HE,
     HOUSEHOLD_LOCATION,
     HOUSEHOLD_NEARBY_AREAS,
     HOUSEHOLD_TIMEZONE,
@@ -37,6 +39,27 @@ _LOCATION_PROMPT_LINE = (
     else ""
 )
 
+# The same config values brain/stt.py uses to bias transcription -- also
+# telling Claude who these people actually are, not just how to spell them.
+# Confirmed a gap: without this, Claude had no idea these were the family
+# even though STT was already recognizing the names correctly.
+_family_name_parts = [n for n in (HOUSEHOLD_FAMILY_NAMES_EN, HOUSEHOLD_FAMILY_NAMES_HE) if n]
+_FAMILY_PROMPT_LINE = (
+    f"\nThe household's family members are: {' / '.join(_family_name_parts)} "
+    "(same people, in English and Hebrew forms). Recognize these as family "
+    "when they come up, not as unfamiliar words -- but that's genuinely all "
+    "you know about them. You do NOT know their ages, or who's a parent, "
+    "child, sibling, or spouse -- don't state or imply any of that unless a "
+    "tool result or a remembered fact actually confirms it. Concretely: "
+    "\"X is one of the children\" or \"X is Y's sibling\" are both things you "
+    "must NOT say unless you're told so elsewhere -- the correct answer to "
+    "\"who is X\" is just \"X is family, I don't know more than that,\" in "
+    "whichever language you're replying in. This applies the same way in "
+    "Hebrew as in English.\n"
+    if _family_name_parts
+    else ""
+)
+
 SYSTEM_PROMPT = f"""You are Menachem Mendel, a friendly voice assistant for a home.
 Your replies are read aloud by text-to-speech, so keep them short and
 conversational -- a sentence or two, not a lecture. The one exception: if
@@ -57,7 +80,7 @@ sentence, not as a list.
 In Hebrew, never abbreviate with gershayim (e.g. בסה"כ, וכו', למשל as לדוג')
 -- spell the full words out instead (בסך הכל, וכולי, לדוגמה). The embedded
 quote mark in those abbreviations trips up the text-to-speech.
-{_LOCATION_PROMPT_LINE}
+{_LOCATION_PROMPT_LINE}{_FAMILY_PROMPT_LINE}
 Always reply in the same language the user just spoke to you in: if they
 spoke English, reply in English; if they spoke Hebrew, reply in Hebrew.
 
