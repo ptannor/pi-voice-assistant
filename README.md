@@ -349,9 +349,22 @@ pull into a normal dev machine just to try one word. Do it via openWakeWord's
 own free-GPU Colab notebooks instead (linked from
 [openWakeWord's README](https://github.com/dscripka/openWakeWord)): the
 simple one-click notebook for a quick model, or `automatic_model_training.ipynb`
-for a higher-quality one. Either way you'll end up with a `.onnx` file --
-drop it anywhere in this repo (it's just a model file, no code changes
-needed) and point at it:
+for a higher-quality one.
+
+If you want a **different** wake word than "Mendy" (or just don't want to
+fight the upstream notebook's bitrot), use
+[`mendy_wake_word_training.ipynb`](mendy_wake_word_training.ipynb) in this
+repo instead -- it's `automatic_model_training.ipynb` pre-adapted for this
+project: unnecessary TensorFlow/tflite dependencies removed (this repo only
+ever loads `.onnx` models, see `wake_word_daemon.py`'s `inference_framework="onnx"`),
+re-run-safe installs, production-grade sample counts instead of the upstream
+notebook's quick-demo settings, and extra cells to download the trained model
+and self-test it before leaving Colab. To target a different word, just
+change `config["target_phrase"] = ["mendy"]` near the top to whatever you
+want. Upload it via Colab's File → Upload notebook.
+
+Either way you'll end up with a `.onnx` file -- drop it anywhere in this repo
+(it's just a model file, no code changes needed) and point at it:
 ```bash
 # add to .pi-config:
 WAKE_WORD_MODEL_PATH=/path/to/mendy.onnx
