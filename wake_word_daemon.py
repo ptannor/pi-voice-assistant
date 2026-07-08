@@ -40,6 +40,14 @@ COOLDOWN_SECONDS = 2.0  # ignore re-triggers right as we resume listening
 INITIAL_QUERY_TIMEOUT = 4.0
 FOLLOW_UP_TIMEOUT = 3.5  # long enough for a real follow-up, short enough to limit exposure to ambient noise
 MAX_FOLLOW_UP_TURNS = 5  # safety cap -- require a fresh "Alexa" after a while regardless
+# How long after a conversation ends a fresh "Alexa" is still treated as a
+# continuation of it (same history/session_language) rather than starting
+# blank. Confirmed needed: a closed-answer reply (not ending in "?") ends the
+# conversation by design, but the user often says "Alexa" again seconds later
+# to ask an obvious follow-up ("what about showtimes for that one") -- without
+# this, that follow-up got answered with zero memory of what was just
+# discussed, producing an answer about unrelated cinemas.
+CONTINUATION_WINDOW_SECONDS = 90.0
 
 # Explicit signals the user is done, checked against what they just said --
 # end the conversation immediately rather than waiting on the follow-up
@@ -125,8 +133,18 @@ def _listen_for_wake_word(model: Model, wake_word_key: str, in_device: Device, l
                 return now
 
 
-def _handle_conversation(in_device: Device, out_device: Device) -> None:
-    history: list[dict] | None = None
+def _handle_conversation(
+    in_device: Device,
+    out_device: Device,
+    initial_history: list[dict] | None = None,
+    initial_session_language: str | None = None,
+) -> tuple[list[dict] | None, str | None]:
+    """Returns (history, session_language) as they stood when the
+    conversation ended, so `main()` can offer them to the *next* call as a
+    continuation if a fresh "Alexa" comes in soon enough (see
+    CONTINUATION_WINDOW_SECONDS) -- otherwise this always starts blank.
+    """
+    history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0
     # Locked to whichever language the first turn detects -- every later turn
@@ -134,7 +152,7 @@ def _handle_conversation(in_device: Device, out_device: Device) -> None:
     # instead of re-running the dual-language detection each time. Cheaper,
     # and gets the full forced-language accuracy benefit for the whole
     # conversation without needing a second wake word per language.
-    session_language: str | None = None
+    session_language: str | None = initial_session_language
     while turns < MAX_FOLLOW_UP_TURNS:
         turns += 1
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
@@ -215,6 +233,8 @@ def _handle_conversation(in_device: Device, out_device: Device) -> None:
     except PlaybackFailed as exc:
         print(f"Goodbye chime failed: {exc}", file=sys.stderr, flush=True)
 
+    return history, session_language
+
 
 def main() -> None:
     cfg = DEFAULT_CONFIG
@@ -234,9 +254,22 @@ def main() -> None:
     print(f"Responses play on '{out_device.name}' (index {out_device.index})", flush=True)
 
     last_trigger = 0.0
+    last_conversation_end = float("-inf")
+    last_history: list[dict] | None = None
+    last_session_language: str | None = None
     while True:
         last_trigger = _listen_for_wake_word(model, wake_word_key, in_device, last_trigger)
-        _handle_conversation(in_device, out_device)
+
+        if time.monotonic() - last_conversation_end < CONTINUATION_WINDOW_SECONDS:
+            print("Continuing previous conversation's context", flush=True)
+            initial_history, initial_session_language = last_history, last_session_language
+        else:
+            initial_history, initial_session_language = None, None
+
+        last_history, last_session_language = _handle_conversation(
+            in_device, out_device, initial_history, initial_session_language
+        )
+        last_conversation_end = time.monotonic()
         last_trigger = time.monotonic()  # restart cooldown from when we resume listening
 
 
