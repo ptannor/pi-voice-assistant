@@ -2,7 +2,7 @@
 
 A Raspberry Pi 4 voice assistant. `wake_word_daemon.py` does real free-form
 conversation: "Alexa" triggers a recording of your question, which goes
-through Claude and comes back as spoken audio — in whichever of English/Hebrew
+through an LLM (such as Claude or Gemini) and comes back as spoken audio — in whichever of English/Hebrew
 you actually spoke. See [Wake word](#wake-word-alexa) below.
 
 > **What's actually been tested:** the full record → save → playback round
