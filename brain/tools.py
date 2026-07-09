@@ -48,22 +48,41 @@ TOOLS = [
     },
     # Music / volume
     {
-        "name": "play_music",
-        "description": "Play a song, artist, or genre of music.",
+        "name": "play_music_hebrew",
+        "description": "Play a song, artist, or genre of music using Hebrew search query on Spotify.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to play, e.g. a song title, artist, or genre.",
+                    "description": "What to play, e.g. a song title, artist, or genre in Hebrew.",
                 }
             },
             "required": ["query"],
         },
     },
     {
-        "name": "stop_music",
-        "description": "Stop any currently playing music.",
+        "name": "stop_music_hebrew",
+        "description": "Stop any currently playing music on Spotify.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "play_music_english",
+        "description": "Play a song, artist, or genre of music using English search query on Spotify.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to play, e.g. a song title, artist, or genre in English.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "stop_music_english",
+        "description": "Stop any currently playing music on Spotify.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -252,11 +271,21 @@ TOOL_LANGUAGES: dict[str, list[str]] = {
     "ask_mishna_question": ["he"],
     "tell_joke_english": ["en"],
     "tell_joke_hebrew": ["he"],
-    # Music playback is Hebrew-only by request (household preference), same as
-    # the Hebrew-only Jewish-content skills above.
-    "play_music": ["he"],
-    "stop_music": ["he"],
+    # Music playback is split by language: Hebrew tools are Hebrew-only,
+    # English tools are English-only.
+    "play_music_hebrew": ["he"],
+    "stop_music_hebrew": ["he"],
+    "play_music_english": ["en"],
+    "stop_music_english": ["en"],
 }
+
+
+def get_tools_for_language(language: str) -> list[dict]:
+    """Filter the global TOOLS list, returning only tools allowed for `language`."""
+    return [
+        tool for tool in TOOLS
+        if language in TOOL_LANGUAGES.get(tool["name"], ["en", "he"])
+    ]
 
 
 def execute_tool(name: str, language: str, tool_input: dict) -> str:
@@ -300,13 +329,13 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
     if name == "search_household_info":
         return memory.search_household_info(tool_input["query"])
 
-    if name == "play_music":
+    if name == "play_music_hebrew":
         try:
             return spotify.play(tool_input["query"])
         except spotify.SpotifyError as exc:
             return f"Couldn't play the music ({exc}). Tell the user you couldn't play it right now."
 
-    if name == "stop_music":
+    if name == "stop_music_hebrew":
         try:
             return spotify.stop()
         except spotify.SpotifyError as exc:
