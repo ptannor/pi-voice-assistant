@@ -78,6 +78,15 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 # rate-limited, or expired domains across every instance tested.
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY")
 
+# Spotify Web API credentials for music playback (see brain/spotify.py). These
+# are the standard spotipy env var names -- register a free app at
+# developer.spotify.com to get the client id/secret, and set the redirect URI
+# to match what's registered there. Note: controlling playback also requires a
+# Spotify Premium account and an active Spotify Connect device to play on.
+SPOTIPY_CLIENT_ID = os.environ.get("SPOTIPY_CLIENT_ID")
+SPOTIPY_CLIENT_SECRET = os.environ.get("SPOTIPY_CLIENT_SECRET")
+SPOTIPY_REDIRECT_URI = os.environ.get("SPOTIPY_REDIRECT_URI")
+
 # Haiku: fast/cheap, appropriate for short spoken Q&A read aloud by TTS.
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 

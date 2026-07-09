@@ -10,6 +10,7 @@ recordings/*.wav
 shabbat_cache.json
 shabbat_state.json
 .web_search_cache.json
+.spotify-cache
 household_memory/
 scratch_name_samples/
 logs/

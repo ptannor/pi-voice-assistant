@@ -18,6 +18,7 @@ dependencies = [
     "groq",
     "anthropic",
     "python-dotenv",
+    "spotipy>=2.26.0",
 ]
 
 # This is a personal project deployed to a home Raspberry Pi with no access to

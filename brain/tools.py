@@ -1,7 +1,7 @@
 """Tool definitions for Claude's tool-calling.
 
 Most tools here are still stubs -- those features aren't actually built yet
-(no real timer, no Spotify integration, no telephony). The point of
+(no real timer, no telephony). The point of
 registering them anyway, rather than just relying on the system prompt to say
 "you can't do this," is that prompt instructions alone didn't work in
 practice: Claude kept confidently claiming to set timers and play music that
@@ -19,7 +19,7 @@ for it and TOOLS is sent to the API as-is.
 """
 from __future__ import annotations
 
-from . import memory
+from . import memory, spotify
 from .calculator import calculate
 from .language import LANGUAGE_NAMES
 from .mode import set_funny_voice
@@ -252,6 +252,10 @@ TOOL_LANGUAGES: dict[str, list[str]] = {
     "ask_mishna_question": ["he"],
     "tell_joke_english": ["en"],
     "tell_joke_hebrew": ["he"],
+    # Music playback is Hebrew-only by request (household preference), same as
+    # the Hebrew-only Jewish-content skills above.
+    "play_music": ["he"],
+    "stop_music": ["he"],
 }
 
 
@@ -295,6 +299,18 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
 
     if name == "search_household_info":
         return memory.search_household_info(tool_input["query"])
+
+    if name == "play_music":
+        try:
+            return spotify.play(tool_input["query"])
+        except spotify.SpotifyError as exc:
+            return f"Couldn't play the music ({exc}). Tell the user you couldn't play it right now."
+
+    if name == "stop_music":
+        try:
+            return spotify.stop()
+        except spotify.SpotifyError as exc:
+            return f"Couldn't stop the music ({exc}). Tell the user you couldn't stop it right now."
 
     return (
         f"The '{name}' feature isn't built yet. Tell the user plainly that this "
