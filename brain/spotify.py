@@ -36,8 +36,31 @@ class SpotifyError(Exception):
     pass
 
 
+def _make_auth(open_browser: bool):
+    """Build a SpotifyOAuth. `open_browser` controls whether it may launch the
+    interactive first-time authorization flow (browser + loopback capture) --
+    only ever True for the one-time `python -m brain.spotify` setup, never from
+    inside the daemon."""
+    from spotipy.oauth2 import SpotifyOAuth
+
+    return SpotifyOAuth(
+        client_id=SPOTIPY_CLIENT_ID,
+        client_secret=SPOTIPY_CLIENT_SECRET,
+        redirect_uri=SPOTIPY_REDIRECT_URI,
+        scope=_SCOPE,
+        cache_path=str(_CACHE_PATH),
+        open_browser=open_browser,
+    )
+
+
 def _get_client():
-    """Lazily build an authenticated spotipy client, cached across calls."""
+    """Lazily build an authenticated spotipy client, cached across calls.
+
+    Never triggers interactive auth: if there's no cached token yet, this
+    raises SpotifyError telling the user to run the one-time setup, rather than
+    blocking on stdin ("Enter the URL you were redirected to:") inside the
+    voice daemon -- which can't be answered mid-call and hangs the request.
+    """
     global _client
     if _client is not None:
         return _client
@@ -49,25 +72,19 @@ def _get_client():
         )
     try:
         import spotipy
-        from spotipy.oauth2 import SpotifyOAuth
     except ImportError as exc:
         raise SpotifyError("spotipy not installed -- run `uv sync`") from exc
 
-    try:
-        _client = spotipy.Spotify(
-            auth_manager=SpotifyOAuth(
-                client_id=SPOTIPY_CLIENT_ID,
-                client_secret=SPOTIPY_CLIENT_SECRET,
-                redirect_uri=SPOTIPY_REDIRECT_URI,
-                scope=_SCOPE,
-                cache_path=str(_CACHE_PATH),
-                # Don't try to pop a browser mid-voice-call; first-time auth is
-                # done out of band via `python -m brain.spotify` (see module docstring).
-                open_browser=False,
-            )
+    auth = _make_auth(open_browser=False)
+    # A cached-but-expired token is fine -- spotipy refreshes it silently via
+    # the refresh token on the next API call. Only a *missing* token would
+    # trigger the interactive flow, so guard against exactly that.
+    if auth.cache_handler.get_cached_token() is None:
+        raise SpotifyError(
+            "Spotify isn't authorized on this machine yet -- run "
+            "`uv run python -m brain.spotify` once to log in, then try again"
         )
-    except Exception as exc:
-        raise SpotifyError(f"Spotify authorization failed: {exc}") from exc
+    _client = spotipy.Spotify(auth_manager=auth)
     return _client
 
 
@@ -131,10 +148,15 @@ def stop() -> str:
 
 
 if __name__ == "__main__":
-    # One-time setup / smoke test: authorizes (creating .spotify-cache) and
-    # lists available Spotify devices. Run once interactively:
+    # One-time setup / smoke test: runs the interactive OAuth (opens a browser
+    # and captures the redirect on the loopback URI), writing .spotify-cache,
+    # then lists available devices. Run once on a machine with a browser:
     #   uv run python -m brain.spotify
-    _sp = _get_client()
+    # Unlike _get_client(), this path is allowed to open the browser -- it's the
+    # deliberate authorization step, not a mid-call request.
+    import spotipy
+
+    _sp = spotipy.Spotify(auth_manager=_make_auth(open_browser=True))
     _devices = _sp.devices().get("devices", [])
     if not _devices:
         print("Authorized. No Spotify devices found right now -- open Spotify somewhere on this account.")
