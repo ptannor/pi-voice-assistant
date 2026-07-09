@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -18,6 +20,7 @@ from .config import (
 )
 from .language import LANGUAGE_NAMES
 from .memory import memory_prompt_block
+from .mode import is_funny_voice_enabled
 from .tools import TOOLS, execute_tool
 
 _NEARBY_AREAS_CLAUSE = (
@@ -92,6 +95,14 @@ For any nontrivial arithmetic (multi-digit multiplication, multiple steps,
 an exponent) use the calculate tool instead of computing it mentally --
 confirmed necessary: asked to compute a multi-step expression, the answer
 was confidently wrong.
+
+If the user asks to switch to "funny voice mode" (or a silly/funny voice),
+or back to "regular"/"normal" voice, call the set_voice_mode tool with
+mode="funny" or mode="regular" accordingly, then reply briefly and
+playfully confirming the switch -- in the same language the user just used,
+same as any other reply. You'll be told below whether funny voice mode is
+currently on -- that's the source of truth, not anything said earlier in
+this conversation.
 {_LOCATION_PROMPT_LINE}{_FAMILY_PROMPT_LINE}
 Always reply in the same language the user just spoke to you in: if they
 spoke English, reply in English; if they spoke Hebrew, reply in Hebrew.
@@ -156,6 +167,25 @@ _MAX_TOOL_ROUNDS = 4  # safety cap against a runaway tool-call loop -- a real
 # answer sometimes needs 2-3 searches (broad query, then a more specific
 # retry), so this leaves a bit of headroom before the round-cap fallback below
 
+# TOOLS never changes at runtime -- mark its last entry cacheable so the whole
+# schema (resent on every single API call otherwise) is served from
+# Anthropic's prompt cache instead of reprocessed each time. Computed once at
+# import time, not per call.
+_TOOLS_CACHED = [*TOOLS[:-1], {**TOOLS[-1], "cache_control": {"type": "ephemeral"}}] if TOOLS else TOOLS
+
+# Reused across calls instead of constructing a fresh client (and its TLS
+# handshake) on every single turn.
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    global _client
+    if _client is None:
+        if not ANTHROPIC_API_KEY:
+            raise BrainError("ANTHROPIC_API_KEY not set -- add it to .env")
+        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _client
+
 # Defense in depth alongside the system prompt's "no markdown/URLs" instruction
 # -- confirmed Claude doesn't reliably follow that instruction alone (a crisis
 # reply came back with **bold** hotline labels and a raw URL, both read aloud
@@ -214,31 +244,80 @@ def _current_datetime_line() -> str:
     )
 
 
-def ask(user_text: str, language: str, history: list[dict] | None = None) -> tuple[str, list[dict]]:
+def _funny_voice_prompt_line() -> str:
+    # Computed fresh per call, same as _current_datetime_line() -- the mode
+    # flag lives in mode.py (in-process, not conversation history), so a
+    # brand-new conversation started after a prior one turned funny voice on
+    # still needs to be told that here, not left to guess from its own memory.
+    if not is_funny_voice_enabled():
+        return ""
+    return (
+        "\nFunny voice mode is currently ON. At the very end of every single "
+        "reply, after everything else you'd otherwise say, add the exact "
+        "phrase \"אני קוקו על כל הראש, אמא אפשר פסטה בולונז\" word for word, "
+        "unchanged, regardless of what the question was or which language "
+        "you replied in.\n"
+    )
+
+
+def ask(
+    user_text: str,
+    language: str,
+    history: list[dict] | None = None,
+    on_tool_call: Callable[[], None] | None = None,
+) -> tuple[str, list[dict], list[tuple[str, float]]]:
     """`language` is "he" or "en" (see brain/language.py).
 
     `history` is prior turns of the same conversation (None/empty for a new
-    one); returns (reply_text, updated_history) so callers can keep passing
-    the running history back in for follow-up turns within one session.
-    """
-    if not ANTHROPIC_API_KEY:
-        raise BrainError("ANTHROPIC_API_KEY not set -- add it to .env")
+    one); returns (reply_text, updated_history, timeline) so callers can keep
+    passing the running history back in for follow-up turns within one
+    session. `timeline` is a list of (stage, seconds) pairs in call order --
+    one entry per Claude API round-trip ("claude") and one per tool
+    execution ("tool:<name>") -- for breaking down where a turn's latency
+    actually went (e.g. Claude thinking time vs. a slow web_search) instead
+    of only knowing the total.
 
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    `on_tool_call`, if given, fires once, the first time this turn needs a
+    tool round -- lets the caller play an acknowledgment sound while a slow
+    tool call (e.g. web_search) is in flight, since that's the dominant cost
+    on most factual questions and the assistant would otherwise sit silent
+    for several seconds. Best-effort: an exception from it is swallowed
+    rather than failing the whole turn over a missed sound cue.
+    """
+    client = _get_client()
+    timeline: list[tuple[str, float]] = []
+
+    def _timed(label, fn, *args, **kwargs):
+        t0 = time.monotonic()
+        result = fn(*args, **kwargs)
+        timeline.append((label, time.monotonic() - t0))
+        return result
     language_name = LANGUAGE_NAMES[language]
-    # Computed fresh per call (not baked into the static SYSTEM_PROMPT, which
-    # is built once at import time) so a long-running daemon always gives
-    # Claude the actual current time, and a fact remembered mid-conversation
-    # is visible on the very next turn, not just from process restart.
-    system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block()
+    # The datetime/memory block is computed fresh per call (a long-running
+    # daemon always needs the actual current time, and a fact remembered
+    # mid-conversation must be visible on the very next turn) but kept as a
+    # separate, uncached system block so it doesn't bust the cache on the
+    # much larger, truly static SYSTEM_PROMPT text below -- that prompt is
+    # ~1,500 tokens resent on every single call otherwise.
+    system_blocks = [
+        {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+    ]
     messages = (history or []) + [
         {"role": "user", "content": f"[The user spoke in {language_name}] {user_text}"}
     ]
 
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL, max_tokens=300, system=system_prompt, tools=TOOLS, messages=messages
+        response = _timed(
+            "claude",
+            client.messages.create,
+            model=CLAUDE_MODEL, max_tokens=300, system=system_blocks, tools=_TOOLS_CACHED, messages=messages,
         )
+        if response.stop_reason == "tool_use" and on_tool_call is not None:
+            try:
+                on_tool_call()
+            except Exception:
+                pass
         rounds = 0
         while response.stop_reason == "tool_use" and rounds < _MAX_TOOL_ROUNDS:
             rounds += 1
@@ -247,14 +326,16 @@ def ask(user_text: str, language: str, history: list[dict] | None = None) -> tup
                 {
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": execute_tool(block.name, language, block.input),
+                    "content": _timed(f"tool:{block.name}", execute_tool, block.name, language, block.input),
                 }
                 for block in response.content
                 if block.type == "tool_use"
             ]
             messages.append({"role": "user", "content": tool_results})
-            response = client.messages.create(
-                model=CLAUDE_MODEL, max_tokens=300, system=system_prompt, tools=TOOLS, messages=messages
+            response = _timed(
+                "claude",
+                client.messages.create,
+                model=CLAUDE_MODEL, max_tokens=300, system=system_blocks, tools=_TOOLS_CACHED, messages=messages,
             )
 
         if response.stop_reason == "tool_use":
@@ -265,11 +346,13 @@ def ask(user_text: str, language: str, history: list[dict] | None = None) -> tup
             # read aloud verbatim once. Discard it and force one final,
             # tool-free turn on the same history so Claude commits to its
             # best answer from what it's already gathered.
-            response = client.messages.create(
+            response = _timed(
+                "claude_forced_final",
+                client.messages.create,
                 model=CLAUDE_MODEL,
                 max_tokens=300,
-                system=system_prompt,
-                tools=TOOLS,
+                system=system_blocks,
+                tools=_TOOLS_CACHED,
                 tool_choice={"type": "none"},
                 messages=messages,
             )
@@ -284,4 +367,4 @@ def ask(user_text: str, language: str, history: list[dict] | None = None) -> tup
         reply = "לא הצלחתי למצוא תשובה ברורה לזה, סליחה." if language == "he" else "Sorry, I couldn't find a clear answer to that."
     reply = _strip_voice_unfriendly_formatting(reply)
     messages.append({"role": "assistant", "content": response.content})
-    return reply, messages
+    return reply, messages, timeline

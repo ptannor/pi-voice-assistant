@@ -9,6 +9,7 @@ account, no API key, no signup) as a stand-in for the eventual custom-trained
 """
 from __future__ import annotations
 
+import json
 import queue
 import sys
 import tempfile
@@ -24,15 +25,34 @@ from openwakeword.model import Model
 from audio_check.config import DEFAULT_CONFIG
 from audio_check.devices import Device, find_input_device, find_output_device
 from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed
-from audio_check.player import play_wav
+from audio_check.player import play_wav, play_wav_async
 from audio_check.recorder import record_until_silence
 from brain.config import WAKE_WORD_MODEL_PATH
 from brain.llm import BrainError, ask
-from brain.respond import synthesize_reply
+from brain.respond import speak_reply
 from brain.stt import TranscriptionError, transcribe
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
 GOODBYE_WAV = Path(__file__).parent / "assets" / "goodbye_chime.wav"
+# Played (fire-and-forget) the moment a turn needs a tool call -- e.g.
+# web_search, which dominates turn latency (~3.6-4s) on most factual/local
+# questions. Without this, the assistant sits silent that whole time; this
+# gives an acknowledgment within ~1s instead, which is what actually makes
+# Alexa feel responsive (see the design review that ruled out full response
+# streaming as not worth the complexity/regression risk).
+THINKING_WAV = Path(__file__).parent / "assets" / "thinking.wav"
+
+# One JSON object per turn, appended (not overwritten) -- lets latency be
+# analyzed across many runs/sessions later instead of only whatever's still
+# in a terminal's scrollback. Gitignored: durations only, but still runtime
+# data from a household voice assistant, not something to publish.
+LOG_PATH = Path(__file__).parent / "logs" / "latency.jsonl"
+
+
+def _log_turn(record: dict) -> None:
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_PATH.open("a") as f:
+        f.write(json.dumps(record) + "\n")
 
 
 def _wav_duration_seconds(path: Path) -> float:
@@ -173,7 +193,6 @@ def _handle_conversation(
     while turns < MAX_FOLLOW_UP_TURNS:
         turns += 1
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
-        reply_wav: Path | None = None
         try:
             # Start listening *while* the chime plays, instead of waiting for
             # it to finish first -- someone who starts talking right on the
@@ -207,6 +226,7 @@ def _handle_conversation(
             if recorded is None:
                 break  # nothing said -- end the conversation, back to wake-word listening
 
+            stt_mode = "forced" if session_language else "dual"
             text, language = transcribe(query_wav, forced_language=session_language)
             session_language = language
             t2 = time.monotonic()
@@ -214,19 +234,43 @@ def _handle_conversation(
             if not text:
                 break
 
-            reply, history = ask(text, language, history)
+            reply, history, ask_timeline = ask(
+                text, language, history,
+                on_tool_call=lambda: play_wav_async(THINKING_WAV, out_device),
+            )
             t3 = time.monotonic()
             print(f"Claude: {reply}", flush=True)
 
-            reply_wav = synthesize_reply(reply)
+            t_first_audio = speak_reply(reply, out_device)
             t4 = time.monotonic()
+            # "Perceived" = the silence-to-speech gap the user actually
+            # feels (transcribe + ask + time to first audio) -- as opposed
+            # to `total`, which also counts however long they talked and how
+            # long the full reply took to finish playing, neither of which
+            # is latency this pipeline controls.
+            perceived = (t3 - t1) + t_first_audio
+            ask_breakdown = ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in ask_timeline)
             print(
                 f"[timing] record={t1 - t0:.1f}s transcribe={t2 - t1:.1f}s "
-                f"ask={t3 - t2:.1f}s synthesize={t4 - t3:.1f}s",
+                f"ask={t3 - t2:.1f}s ({ask_breakdown}) first_audio={t_first_audio:.1f}s "
+                f"total_speak={t4 - t3:.1f}s perceived={perceived:.1f}s",
                 flush=True,
             )
-
-            play_wav(reply_wav, out_device)
+            _log_turn({
+                "ts": time.time(),
+                "turn": turns,
+                "language": language,
+                "stt_mode": stt_mode,
+                "record_s": round(t1 - t0, 3),
+                "transcribe_s": round(t2 - t1, 3),
+                "ask_s": round(t3 - t2, 3),
+                "ask_breakdown": [{"stage": stage, "seconds": round(seconds, 3)} for stage, seconds in ask_timeline],
+                "first_audio_s": round(t_first_audio, 3),
+                "total_speak_s": round(t4 - t3, 3),
+                "perceived_latency_s": round(perceived, 3),
+                "query_chars": len(text),
+                "reply_chars": len(reply),
+            })
 
             if _said_closing_phrase(text, language):
                 break  # explicit "thanks"/"bye" etc. -- end right away
@@ -247,8 +291,6 @@ def _handle_conversation(
             break
         finally:
             query_wav.unlink(missing_ok=True)
-            if reply_wav is not None:
-                reply_wav.unlink(missing_ok=True)
         timeout = FOLLOW_UP_TIMEOUT
 
     # Every exit from the loop above (silence timeout, closing phrase, turn

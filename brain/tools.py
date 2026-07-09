@@ -22,6 +22,7 @@ from __future__ import annotations
 from . import memory
 from .calculator import calculate
 from .language import LANGUAGE_NAMES
+from .mode import set_funny_voice
 from .websearch import WebSearchError, search
 
 TOOLS = [
@@ -164,6 +165,28 @@ TOOLS = [
             "required": ["expression"],
         },
     },
+    # Real (not a stub) -- see mode.py/respond.py/llm.py's funny-voice hooks.
+    # A kids' easter egg: a higher-pitched/child-like voice plus a fixed silly
+    # Hebrew sign-off after every reply, toggled on/off by voice command.
+    {
+        "name": "set_voice_mode",
+        "description": (
+            "Switch the assistant's voice between normal and a silly 'funny voice' "
+            "easter egg mode. Call this when the user explicitly asks to switch to "
+            "funny/silly voice mode, or back to regular/normal voice mode."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["funny", "regular"],
+                    "description": "'funny' for the silly easter egg voice, 'regular' for the normal voice.",
+                }
+            },
+            "required": ["mode"],
+        },
+    },
     # Real (not a stub) -- see websearch.py
     {
         "name": "web_search",
@@ -248,6 +271,15 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
 
     if name == "calculate":
         return calculate(tool_input["expression"])
+
+    if name == "set_voice_mode":
+        funny = tool_input["mode"] == "funny"
+        set_funny_voice(funny)
+        # Deliberately not a natural-language English sentence -- confirmed
+        # that biased Claude into echoing/paraphrasing this tool result in
+        # English even mid-Hebrew-conversation, overriding the "reply in the
+        # user's language" instruction. A neutral status has nothing to echo.
+        return "ok"
 
     if name == "web_search":
         try:

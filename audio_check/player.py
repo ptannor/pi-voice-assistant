@@ -10,7 +10,7 @@ from .devices import Device
 from .errors import PlaybackFailed
 
 
-def play_wav(filepath: Path, device: Device) -> None:
+def _load_wav(filepath: Path) -> tuple[np.ndarray, int]:
     if not filepath.exists():
         raise PlaybackFailed(f"No WAV file at {filepath}. Record one first.")
 
@@ -27,7 +27,11 @@ def play_wav(filepath: Path, device: Device) -> None:
     audio = np.frombuffer(raw, dtype=dtype)
     if channels > 1:
         audio = audio.reshape(-1, channels)
+    return audio, sample_rate
 
+
+def play_wav(filepath: Path, device: Device) -> None:
+    audio, sample_rate = _load_wav(filepath)
     try:
         sd.play(audio, samplerate=sample_rate, device=device.index)
         sd.wait()
@@ -37,6 +41,25 @@ def play_wav(filepath: Path, device: Device) -> None:
             "The speaker may not support this sample rate, or the wrong "
             "output was selected via 'aplay -l' / raspi-config."
         ) from exc
+    except PermissionError as exc:
+        raise PlaybackFailed(
+            "Permission denied opening the speaker. On Raspberry Pi OS, "
+            "add your user to the audio group and re-login: "
+            "'sudo usermod -aG audio $USER'"
+        ) from exc
+
+
+def play_wav_async(filepath: Path, device: Device) -> None:
+    """Fire-and-forget playback -- starts the sound and returns immediately
+    instead of waiting for it to finish. For a short acknowledgment tone
+    (e.g. "still working on it") that shouldn't add its own latency on top
+    of whatever's happening concurrently, like a slow tool call in flight.
+    """
+    audio, sample_rate = _load_wav(filepath)
+    try:
+        sd.play(audio, samplerate=sample_rate, device=device.index)
+    except sd.PortAudioError as exc:
+        raise PlaybackFailed(f"Playback failed on '{device.name}' at {sample_rate} Hz: {exc}.") from exc
     except PermissionError as exc:
         raise PlaybackFailed(
             "Permission denied opening the speaker. On Raspberry Pi OS, "

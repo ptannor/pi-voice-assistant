@@ -18,14 +18,15 @@ DEFAULT_VOICE = "he-IL-AvriNeural"
 # +20% confirmed by listening: default pacing left unnaturally long pauses
 # between short clauses/questions.
 DEFAULT_RATE = "+20%"
+DEFAULT_PITCH = "+0Hz"
 
 
 class SynthesisError(Exception):
     pass
 
 
-async def _synthesize_mp3(text: str, mp3_path: Path, voice: str, rate: str) -> None:
-    communicate = edge_tts.Communicate(text, voice, rate=rate)
+async def _synthesize_mp3(text: str, mp3_path: Path, voice: str, rate: str, pitch: str) -> None:
+    communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
     await communicate.save(str(mp3_path))
 
 
@@ -34,6 +35,7 @@ def synthesize_to_wav(
     output_path: Path,
     voice: str = DEFAULT_VOICE,
     rate: str = DEFAULT_RATE,
+    pitch: str = DEFAULT_PITCH,
 ) -> None:
     """Synthesize Hebrew text to a WAV file at output_path.
 
@@ -44,7 +46,7 @@ def synthesize_to_wav(
     with tempfile.TemporaryDirectory() as tmp_dir:
         mp3_path = Path(tmp_dir) / "speech.mp3"
         try:
-            asyncio.run(_synthesize_mp3(text, mp3_path, voice, rate))
+            asyncio.run(_synthesize_mp3(text, mp3_path, voice, rate, pitch))
         except Exception as exc:  # edge_tts raises its own exception types
             raise SynthesisError(f"Edge TTS synthesis failed: {exc}") from exc
 
