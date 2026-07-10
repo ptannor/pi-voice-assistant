@@ -264,6 +264,22 @@ def _timer_prompt_line() -> str:
     return ""
 
 
+def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]]) -> str:
+    # Find if any tool was executed in this turn
+    tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
+    if not tool_stages:
+        return "לא הצלחתי למצוא תשובה ברורה לזה, סליחה." if language == "he" else "Sorry, I couldn't find a clear answer to that."
+    
+    # Get the last tool stage name
+    last_tool = tool_stages[-1].replace("tool:", "")
+    if "stop" in last_tool or "cancel" in last_tool:
+        return "עצרתי." if language == "he" else "Stopped."
+    elif "set_timer" in last_tool:
+        return "הטיימר הוגדר." if language == "he" else "Timer set."
+    else:
+        return "בוצע." if language == "he" else "Done."
+
+
 def ask(
     user_text: str,
     language: str,
@@ -379,10 +395,7 @@ def ask(
 
     reply = "".join(block.text for block in response.content if block.type == "text").strip()
     if not reply:
-        # Confirmed possible (though rare) when tool_choice=none is forced
-        # above with little else to go on -- silence is worse than an
-        # explicit, honest "couldn't find it".
-        reply = "לא הצלחתי למצוא תשובה ברורה לזה, סליחה." if language == "he" else "Sorry, I couldn't find a clear answer to that."
+        reply = _get_empty_reply_fallback(language, timeline)
     reply = _strip_voice_unfriendly_formatting(reply)
     messages.append({"role": "assistant", "content": response.content})
     return reply, messages, timeline
