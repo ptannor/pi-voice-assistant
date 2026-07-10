@@ -136,9 +136,8 @@ def _clean_hebrew_query(query: str) -> str:
 def play(query: str) -> str:
     """Search for `query` and start playing the top matching track (or play a URI directly).
     Returns a short status string for Claude to relay; raises SpotifyError on failure."""
-    query = (query or "").strip()
     if not query:
-        return "No song was specified to play."
+        return "status: error_no_query"
 
     sp = _get_client()
     try:
@@ -153,16 +152,12 @@ def play(query: str) -> str:
             results = sp.search(q=search_query, type="track", limit=5)
             items = results.get("tracks", {}).get("items", [])
             if not items:
-                return f"Couldn't find anything on Spotify for '{search_query}'."
+                return f"status: error_not_found, query: {search_query}"
             track = items[0]
 
         device_id = _active_device_id(sp)
         if device_id is None:
-            return (
-                "Found the song, but there's no Spotify device to play on right "
-                "now. Open Spotify on a phone or computer (or start the Pi's "
-                "Spotify player) on the same account, then ask again."
-            )
+            return "status: error_no_active_device"
         sp.start_playback(device_id=device_id, uris=[track["uri"]])
     except SpotifyError:
         raise

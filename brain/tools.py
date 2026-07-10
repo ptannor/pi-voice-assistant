@@ -357,13 +357,13 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
         try:
             return spotify.play(tool_input["query"])
         except spotify.SpotifyError as exc:
-            return f"Couldn't play the music ({exc}). Tell the user you couldn't play it right now."
+            return f"status: error_playback_failed, details: {exc}"
 
     if name == "stop_music_hebrew":
         try:
             return spotify.stop()
         except spotify.SpotifyError as exc:
-            return f"Couldn't stop the music ({exc}). Tell the user you couldn't stop it right now."
+            return f"status: error_stop_failed, details: {exc}"
 
     if name == "set_timer_hebrew":
         return timer.set_timer(tool_input["duration_seconds"])
