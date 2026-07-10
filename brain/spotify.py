@@ -19,6 +19,7 @@ tool stubs stay cheap to import.
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -246,6 +247,34 @@ def resume() -> str:
         raise SpotifyError(f"Couldn't resume Spotify: {exc}") from exc
     return "Resumed playback."
 
+
+def search_track(query: str) -> str:
+    """Search for `query` and return top 3 matching tracks in a language-neutral format."""
+    query = (query or "").strip()
+    if not query:
+        return "status: error_no_query"
+
+    sp = _get_client()
+    try:
+        cleaned_query = _clean_hebrew_query(query)
+        search_query = cleaned_query if cleaned_query else query
+        results = sp.search(q=search_query, type="track", limit=5)
+        items = results.get("tracks", {}).get("items", [])
+        if not items:
+            return "status: empty_results"
+        
+        candidates = []
+        for item in items[:3]:
+            artists = ", ".join(a["name"] for a in item.get("artists", []))
+            candidates.append({
+                "name": item["name"],
+                "artist": artists,
+                "popularity": item.get("popularity", 0),
+                "uri": item["uri"]
+            })
+        return json.dumps(candidates, ensure_ascii=False)
+    except Exception as exc:
+        return f"status: error_search_failed, details: {exc}"
 
 
 if __name__ == "__main__":

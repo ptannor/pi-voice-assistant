@@ -68,13 +68,27 @@ TOOLS = [
     # Music / volume
     {
         "name": "play_music_hebrew",
-        "description": "Play a song, artist, or genre of music using Hebrew search query on Spotify.",
+        "description": "Play a song, artist, or genre of music using a search query or exact Spotify track URI.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to play, e.g. a song title, artist, or genre in Hebrew.",
+                    "description": "The query to search/play, or a direct track URI (e.g., 'spotify:track:...').",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_music_hebrew",
+        "description": "Search Spotify for a song and return a list of top candidate tracks with names, artists, popularity (0-100), and track URIs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The song query to search.",
                 }
             },
             "required": ["query"],
@@ -87,13 +101,27 @@ TOOLS = [
     },
     {
         "name": "play_music_english",
-        "description": "Play a song, artist, or genre of music using English search query on Spotify.",
+        "description": "Play a song, artist, or genre of music using a search query or exact Spotify track URI.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to play, e.g. a song title, artist, or genre in English.",
+                    "description": "The query to search/play, or a direct track URI (e.g., 'spotify:track:...').",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_music_english",
+        "description": "Search Spotify for a song and return a list of top candidate tracks with names, artists, popularity (0-100), and track URIs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The song query to search.",
                 }
             },
             "required": ["query"],
@@ -293,8 +321,10 @@ TOOL_LANGUAGES: dict[str, list[str]] = {
     # Music playback is split by language: Hebrew tools are Hebrew-only,
     # English tools are English-only.
     "play_music_hebrew": ["he"],
+    "search_music_hebrew": ["he"],
     "stop_music_hebrew": ["he"],
     "play_music_english": ["en"],
+    "search_music_english": ["en"],
     "stop_music_english": ["en"],
     # Timers are also split by language.
     "set_timer_hebrew": ["he"],
@@ -353,13 +383,19 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
     if name == "search_household_info":
         return memory.search_household_info(tool_input["query"])
 
-    if name == "play_music_hebrew":
+    if name in ("play_music_hebrew", "play_music_english"):
         try:
             return spotify.play(tool_input["query"])
         except spotify.SpotifyError as exc:
             return f"status: error_playback_failed, details: {exc}"
 
-    if name == "stop_music_hebrew":
+    if name in ("search_music_hebrew", "search_music_english"):
+        try:
+            return spotify.search_track(tool_input["query"])
+        except spotify.SpotifyError as exc:
+            return f"status: error_search_failed, details: {exc}"
+
+    if name in ("stop_music_hebrew", "stop_music_english"):
         try:
             return spotify.stop()
         except spotify.SpotifyError as exc:
