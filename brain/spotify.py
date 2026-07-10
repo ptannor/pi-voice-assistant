@@ -19,6 +19,7 @@ tool stubs stay cheap to import.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .config import SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, SPOTIPY_REDIRECT_URI
@@ -99,21 +100,62 @@ def _active_device_id(sp) -> str | None:
     return devices[0]["id"]
 
 
+def _clean_hebrew_query(query: str) -> str:
+    """Strip common helper prefix/suffix words in Hebrew search queries."""
+    words_to_remove = [
+        "נגן לי את השיר",
+        "נגן את השיר",
+        "תשמיע את השיר",
+        "תנגן את השיר",
+        "תשמיע לי את",
+        "נגן לי את",
+        "נגן את",
+        "תשמיע את",
+        "תנגן את",
+        "בספוטיפיי",
+        "ספוטיפיי",
+        "השיר",
+        "שיר",
+        "נגן",
+        "נגני",
+        "תשמיע",
+        "תשמיעי",
+        "תנגן",
+        "תנגני",
+        "את",
+        "לי",
+        "ישמור",
+    ]
+    query = " ".join(query.split())
+    for phrase in words_to_remove:
+        pattern = r"\b" + re.escape(phrase) + r"\b"
+        query = re.sub(pattern, "", query, flags=re.IGNORECASE)
+    return " ".join(query.split())
+
+
 def play(query: str) -> str:
-    """Search for `query` and start playing the top matching track. Returns a
-    short status string for Claude to relay; raises SpotifyError on failure."""
+    """Search for `query` and start playing the top matching track (or play a URI directly).
+    Returns a short status string for Claude to relay; raises SpotifyError on failure."""
     query = (query or "").strip()
     if not query:
         return "No song was specified to play."
 
     sp = _get_client()
     try:
-        results = sp.search(q=query, type="track", limit=1)
-        items = results.get("tracks", {}).get("items", [])
-        if not items:
-            return f"Couldn't find anything on Spotify for '{query}'."
+        if query.startswith("spotify:track:"):
+            # Fetch track details directly from the URI
+            track_id = query.split(":")[-1]
+            track = sp.track(track_id)
+        else:
+            cleaned_query = _clean_hebrew_query(query)
+            # If cleaning leaves nothing, fall back to the original query
+            search_query = cleaned_query if cleaned_query else query
+            results = sp.search(q=search_query, type="track", limit=5)
+            items = results.get("tracks", {}).get("items", [])
+            if not items:
+                return f"Couldn't find anything on Spotify for '{search_query}'."
+            track = items[0]
 
-        track = items[0]
         device_id = _active_device_id(sp)
         if device_id is None:
             return (
@@ -143,8 +185,36 @@ def stop() -> str:
     except SpotifyError:
         raise
     except Exception as exc:
+        err_msg = str(exc)
+        if "Restriction violated" in err_msg or "already paused" in err_msg.lower():
+            return "Stopped the music (already paused)."
         raise SpotifyError(f"Couldn't stop Spotify: {exc}") from exc
     return "Stopped the music."
+
+
+def is_playing() -> bool:
+    """Check if there is active playback on Spotify."""
+    try:
+        sp = _get_client()
+        playback = sp.current_playback()
+        return playback is not None and playback.get("is_playing", False)
+    except Exception:
+        return False
+
+
+def resume() -> str:
+    """Resume playback on the active device. Returns a status string;
+    raises SpotifyError on failure."""
+    sp = _get_client()
+    try:
+        device_id = _active_device_id(sp)
+        if device_id is None:
+            return "There's no active Spotify device to resume."
+        sp.start_playback(device_id=device_id)
+    except Exception as exc:
+        raise SpotifyError(f"Couldn't resume Spotify: {exc}") from exc
+    return "Resumed playback."
+
 
 
 if __name__ == "__main__":

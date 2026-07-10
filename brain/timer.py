@@ -28,8 +28,8 @@ def set_timer(duration_seconds: int) -> str:
         if not _stop_event.is_set():
             try:
                 # When the timer ends, trigger Spotify to play Piano Man
-                print("Timer finished! Playing Piano Man.", flush=True)
-                spotify.play("Piano Man")
+                print("Timer finished! Playing Piano Man Billy Joel (exact track).", flush=True)
+                spotify.play("spotify:track:70C4NyhjD5OZUMzvWZ3njJ")
             except Exception as e:
                 print(f"Failed to play Piano Man at timer end: {e}", flush=True)
 
