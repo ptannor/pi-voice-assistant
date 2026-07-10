@@ -56,3 +56,10 @@ def cancel_timer() -> str:
     if stopped_music:
         return "השיר נעצר בהצלחה."
     return "אין טיימר פעיל או שיר לביטול."
+
+
+def is_timer_active() -> bool:
+    """Check if the background timer thread is active and running."""
+    global _active_timer_thread
+    return _active_timer_thread is not None and _active_timer_thread.is_alive()
+

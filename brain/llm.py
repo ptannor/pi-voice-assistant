@@ -254,6 +254,16 @@ def _funny_voice_prompt_line() -> str:
     )
 
 
+def _timer_prompt_line() -> str:
+    try:
+        from . import timer
+        if timer.is_timer_active():
+            return "\nThere is currently an active background countdown timer running.\n"
+    except Exception:
+        pass
+    return ""
+
+
 def ask(
     user_text: str,
     language: str,
@@ -299,7 +309,7 @@ def ask(
     # ~1,500 tokens resent on every single call otherwise.
     system_blocks = [
         {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+        {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
     ]
 
     messages = (history or []) + [
@@ -334,7 +344,7 @@ def ask(
             # Recompute system blocks in case a tool (like set_voice_mode or remember) updated the state
             system_blocks = [
                 {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
             ]
             response = _timed(
                 "claude",
@@ -352,7 +362,7 @@ def ask(
             # best answer from what it's already gathered.
             system_blocks = [
                 {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
             ]
             response = _timed(
                 "claude_forced_final",
