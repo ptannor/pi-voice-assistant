@@ -170,7 +170,7 @@ def play(query: str) -> str:
         raise SpotifyError(f"Spotify playback failed: {exc}") from exc
 
     artists = ", ".join(a["name"] for a in track.get("artists", []))
-    return f"Now playing '{track['name']}'" + (f" by {artists}." if artists else ".")
+    return f"status: playing, track: {track['name']}, artist: {artists}"
 
 
 def stop() -> str:
