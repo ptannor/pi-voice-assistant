@@ -63,6 +63,23 @@ def _split_first_sentence(text: str) -> tuple[str, str] | None:
     return None
 
 
+def speak_reply_chunks(text: str) -> tuple[list[Path], float]:
+    """Synthesize reply and return a list of WAV files to play, and time-to-first-audio."""
+    t_start = time.monotonic()
+    split = _split_first_sentence(text)
+    if split is None:
+        wav = synthesize_reply(text)
+        return [wav], time.monotonic() - t_start
+
+    first, rest = split
+    first_wav = synthesize_reply(first)
+    t_first_audio = time.monotonic() - t_start
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        rest_future = pool.submit(synthesize_reply, rest)
+        rest_wav = rest_future.result()
+    return [first_wav, rest_wav], t_first_audio
+
+
 def speak_reply(text: str, out_device: Device) -> float:
     """Synthesize and play `text`, returning time-to-first-audio in seconds.
 
@@ -72,29 +89,11 @@ def speak_reply(text: str, out_device: Device) -> float:
     to finish. A single-sentence reply (the common case, per this project's
     system prompt keeping replies short) has no second chunk to overlap with,
     so it falls back to a plain synthesize-then-play with no added
-    complexity. (A full streaming pipeline synthesizing sentence-by-sentence
-    straight from Claude's token stream was considered and rejected -- see
-    the design review: most replies are one sentence anyway, so it wouldn't
-    have helped, and it risked speaking Claude's tool-call narration before
-    its final answer was known.)
+    complexity.
     """
-    t_start = time.monotonic()
-    split = _split_first_sentence(text)
-    if split is None:
-        wav = synthesize_reply(text)
-        t_first_audio = time.monotonic() - t_start
+    chunks, t_first_audio = speak_reply_chunks(text)
+    for wav in chunks:
         play_wav(wav, out_device)
         wav.unlink(missing_ok=True)
-        return t_first_audio
-
-    first, rest = split
-    first_wav = synthesize_reply(first)
-    t_first_audio = time.monotonic() - t_start
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        rest_future = pool.submit(synthesize_reply, rest)
-        play_wav(first_wav, out_device)
-        rest_wav = rest_future.result()
-    first_wav.unlink(missing_ok=True)
-    play_wav(rest_wav, out_device)
-    rest_wav.unlink(missing_ok=True)
     return t_first_audio
+

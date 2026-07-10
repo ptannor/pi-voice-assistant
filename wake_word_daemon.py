@@ -29,7 +29,7 @@ from audio_check.player import play_wav, play_wav_async
 from audio_check.recorder import record_until_silence
 from brain.config import WAKE_WORD_MODEL_PATH
 from brain.llm import BrainError, ask
-from brain.respond import speak_reply
+from brain.respond import speak_reply, speak_reply_chunks
 from brain.stt import TranscriptionError, transcribe
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
@@ -167,9 +167,64 @@ def _listen_for_wake_word(model: Model, wake_word_key: str, in_device: Device, l
                 return now
 
 
+def _play_wav_with_barge_in(
+    filepath: Path,
+    in_device: Device,
+    out_device: Device,
+    model,
+    wake_word_key,
+) -> bool:
+    """Plays a WAV file on out_device while listening to in_device for the wake word.
+    Returns True if a barge-in wake word was detected, False otherwise.
+    """
+    from audio_check.player import _load_wav
+    try:
+        audio, sample_rate = _load_wav(filepath)
+    except Exception as exc:
+        print(f"Error loading WAV for playback: {exc}", file=sys.stderr)
+        return False
+
+    # Start playback asynchronously
+    sd.play(audio, samplerate=sample_rate, device=out_device.index)
+    duration = len(audio) / sample_rate
+    start_time = time.monotonic()
+
+    audio_queue: queue.Queue = queue.Queue()
+    def callback(indata, frames, time_info, status):
+        audio_queue.put(indata[:, 0].copy())
+
+    barge_in = False
+    with sd.InputStream(
+        device=in_device.index,
+        channels=1,
+        samplerate=SAMPLE_RATE,
+        dtype="int16",
+        blocksize=CHUNK_SAMPLES,
+        callback=callback,
+    ):
+        while time.monotonic() - start_time < duration:
+            try:
+                pcm = audio_queue.get(timeout=0.1)
+                prediction = model.predict(pcm)
+                score = prediction.get(wake_word_key, 0.0)
+                if score > DETECTION_THRESHOLD:
+                    print(f"Barge-in detected (score={score:.2f})! Interrupting playback.", flush=True)
+                    sd.stop()
+                    barge_in = True
+                    break
+            except queue.Empty:
+                continue
+
+    if not barge_in:
+        sd.wait()
+    return barge_in
+
+
 def _handle_conversation(
     in_device: Device,
     out_device: Device,
+    model,
+    wake_word_key,
     initial_history: list[dict] | None = None,
 ) -> list[dict] | None:
     """Returns `history` as it stood when the conversation ended, so `main()`
@@ -260,19 +315,24 @@ def _handle_conversation(
             ):
                 stop_called_in_session = True
 
-            t_first_audio = speak_reply(reply, out_device)
+            # Synthesize reply to WAV chunks
+            chunks, t_first_audio = speak_reply_chunks(reply)
+
+            # Play each chunk with barge-in
+            barge_in = False
+            for wav in chunks:
+                barge_in = _play_wav_with_barge_in(wav, in_device, out_device, model, wake_word_key)
+                wav.unlink(missing_ok=True)
+                if barge_in:
+                    break
+
             t4 = time.monotonic()
-            # "Perceived" = the silence-to-speech gap the user actually
-            # feels (transcribe + ask + time to first audio) -- as opposed
-            # to `total`, which also counts however long they talked and how
-            # long the full reply took to finish playing, neither of which
-            # is latency this pipeline controls.
             perceived = (t3 - t1) + t_first_audio
             ask_breakdown = ", ".join(f"{stage}={seconds:.1f}s" for stage, seconds in ask_timeline)
             print(
                 f"[timing] record={t1 - t0:.1f}s transcribe={t2 - t1:.1f}s "
                 f"ask={t3 - t2:.1f}s ({ask_breakdown}) first_audio={t_first_audio:.1f}s "
-                f"total_speak={t4 - t3:.1f}s perceived={perceived:.1f}s",
+                f"total_speak={t4 - t3:.1f}s perceived={perceived:.1f}s" + (" [barge-in interrupted]" if barge_in else ""),
                 flush=True,
             )
             _log_turn({
@@ -291,15 +351,14 @@ def _handle_conversation(
                 "reply_chars": len(reply),
             })
 
+            if barge_in:
+                timeout = INITIAL_QUERY_TIMEOUT
+                continue
+
             if _said_closing_phrase(text, language):
                 break  # explicit "thanks"/"bye" etc. -- end right away
 
-            # Keep listening (silently -- no spoken "anything else?" prompt,
-            # that caused an awkward double-ask with whatever Claude itself
-            # said) only when Claude's own reply is a genuine question,
-            # meaning the thread is actually still open. A plain, closed
-            # answer ("Of course I do!") has nothing left open, so end there
-            # instead of leaving the mic on for no reason.
+            # Keep listening only when Claude's own reply is a genuine question
             if not reply.rstrip().endswith("?"):
                 break
         except (TranscriptionError, BrainError, RecordingFailed, PlaybackFailed) as exc:
@@ -360,7 +419,7 @@ def main() -> None:
         else:
             initial_history = None
 
-        last_history = _handle_conversation(in_device, out_device, initial_history)
+        last_history = _handle_conversation(in_device, out_device, model, wake_word_key, initial_history)
         last_conversation_end = time.monotonic()
         last_trigger = time.monotonic()  # restart cooldown from when we resume listening
 
