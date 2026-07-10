@@ -43,7 +43,7 @@ TOOLS = [
     },
     {
         "name": "cancel_timer_hebrew",
-        "description": "Cancel a running countdown timer.",
+        "description": "Cancel a running countdown timer or stop any playing alarm music.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
