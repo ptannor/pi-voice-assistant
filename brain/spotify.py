@@ -20,6 +20,8 @@ tool stubs stay cheap to import.
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from .config import SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, SPOTIPY_REDIRECT_URI
@@ -87,6 +89,25 @@ def _get_client():
         )
     _client = spotipy.Spotify(auth_manager=auth)
     return _client
+
+
+def _run_applescript(script: str) -> str | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _local_spotify_running() -> bool:
+    if sys.platform != "darwin":
+        return False
+    res = _run_applescript('application "Spotify" is running')
+    return res == "true"
 
 
 def _active_device_id(sp) -> str | None:
@@ -157,6 +178,10 @@ def play(query: str) -> str:
 
         device_id = _active_device_id(sp)
         if device_id is None:
+            if _local_spotify_running():
+                artists = ", ".join(a["name"] for a in track.get("artists", []))
+                _run_applescript(f'tell application "Spotify" to play track "{track["uri"]}"')
+                return f"status: playing, track: {track['name']}, artist: {artists}"
             return "status: error_no_active_device"
         sp.start_playback(device_id=device_id, uris=[track["uri"]])
     except SpotifyError:
@@ -175,6 +200,9 @@ def stop() -> str:
     try:
         device_id = _active_device_id(sp)
         if device_id is None:
+            if _local_spotify_running():
+                _run_applescript('tell application "Spotify" to pause')
+                return "Stopped the music."
             return "There's no active Spotify device to stop."
         sp.pause_playback(device_id=device_id)
     except SpotifyError:
@@ -192,7 +220,12 @@ def is_playing() -> bool:
     try:
         sp = _get_client()
         playback = sp.current_playback()
-        return playback is not None and playback.get("is_playing", False)
+        if playback is not None:
+            return playback.get("is_playing", False)
+        if _local_spotify_running():
+            state = _run_applescript('tell application "Spotify" to player state')
+            return state == "playing"
+        return False
     except Exception:
         return False
 
@@ -204,6 +237,9 @@ def resume() -> str:
     try:
         device_id = _active_device_id(sp)
         if device_id is None:
+            if _local_spotify_running():
+                _run_applescript('tell application "Spotify" to play')
+                return "Resumed playback."
             return "There's no active Spotify device to resume."
         sp.start_playback(device_id=device_id)
     except Exception as exc:
