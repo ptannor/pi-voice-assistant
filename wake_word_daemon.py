@@ -177,6 +177,14 @@ def _handle_conversation(
     comes in soon enough (see CONTINUATION_WINDOW_SECONDS) -- otherwise this
     always starts blank.
     """
+    # Pause Spotify music immediately when conversation starts so the microphone
+    # can hear the user's voice clearly.
+    try:
+        from brain import spotify
+        spotify.stop()
+    except Exception:
+        pass
+
     history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0

@@ -19,7 +19,7 @@ for it and TOOLS is sent to the API as-is.
 """
 from __future__ import annotations
 
-from . import memory, spotify
+from . import memory, spotify, timer
 from .calculator import calculate
 from .language import LANGUAGE_NAMES
 from .mode import set_funny_voice
@@ -28,8 +28,8 @@ from .websearch import WebSearchError, search
 TOOLS = [
     # Timer
     {
-        "name": "set_timer",
-        "description": "Set a countdown timer for a given duration.",
+        "name": "set_timer_hebrew",
+        "description": "Set a countdown timer for a given duration in seconds.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -42,7 +42,26 @@ TOOLS = [
         },
     },
     {
-        "name": "cancel_timer",
+        "name": "cancel_timer_hebrew",
+        "description": "Cancel a running countdown timer.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "set_timer_english",
+        "description": "Set a countdown timer for a given duration in seconds.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "duration_seconds": {
+                    "type": "integer",
+                    "description": "How long the timer should run, in seconds.",
+                }
+            },
+            "required": ["duration_seconds"],
+        },
+    },
+    {
+        "name": "cancel_timer_english",
         "description": "Cancel a running countdown timer.",
         "input_schema": {"type": "object", "properties": {}},
     },
@@ -277,6 +296,11 @@ TOOL_LANGUAGES: dict[str, list[str]] = {
     "stop_music_hebrew": ["he"],
     "play_music_english": ["en"],
     "stop_music_english": ["en"],
+    # Timers are also split by language.
+    "set_timer_hebrew": ["he"],
+    "cancel_timer_hebrew": ["he"],
+    "set_timer_english": ["en"],
+    "cancel_timer_english": ["en"],
 }
 
 
@@ -340,6 +364,12 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
             return spotify.stop()
         except spotify.SpotifyError as exc:
             return f"Couldn't stop the music ({exc}). Tell the user you couldn't stop it right now."
+
+    if name == "set_timer_hebrew":
+        return timer.set_timer(tool_input["duration_seconds"])
+
+    if name == "cancel_timer_hebrew":
+        return timer.cancel_timer()
 
     return (
         f"The '{name}' feature isn't built yet. Tell the user plainly that this "

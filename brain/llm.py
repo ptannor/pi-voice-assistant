@@ -331,6 +331,11 @@ def ask(
                 if block.type == "tool_use"
             ]
             messages.append({"role": "user", "content": tool_results})
+            # Recompute system blocks in case a tool (like set_voice_mode or remember) updated the state
+            system_blocks = [
+                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+            ]
             response = _timed(
                 "claude",
                 client.messages.create,
@@ -345,6 +350,10 @@ def ask(
             # read aloud verbatim once. Discard it and force one final,
             # tool-free turn on the same history so Claude commits to its
             # best answer from what it's already gathered.
+            system_blocks = [
+                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+            ]
             response = _timed(
                 "claude_forced_final",
                 client.messages.create,
