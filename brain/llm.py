@@ -21,7 +21,7 @@ from .config import (
 from .language import LANGUAGE_NAMES
 from .memory import memory_prompt_block
 from .mode import is_funny_voice_enabled
-from .tools import TOOLS, execute_tool
+from .tools import execute_tool, get_tools_for_language
 
 _NEARBY_AREAS_CLAUSE = (
     f" Nearby areas -- {HOUSEHOLD_NEARBY_AREAS} -- are close enough to treat "
@@ -167,12 +167,6 @@ _MAX_TOOL_ROUNDS = 4  # safety cap against a runaway tool-call loop -- a real
 # answer sometimes needs 2-3 searches (broad query, then a more specific
 # retry), so this leaves a bit of headroom before the round-cap fallback below
 
-# TOOLS never changes at runtime -- mark its last entry cacheable so the whole
-# schema (resent on every single API call otherwise) is served from
-# Anthropic's prompt cache instead of reprocessed each time. Computed once at
-# import time, not per call.
-_TOOLS_CACHED = [*TOOLS[:-1], {**TOOLS[-1], "cache_control": {"type": "ephemeral"}}] if TOOLS else TOOLS
-
 # Reused across calls instead of constructing a fresh client (and its TLS
 # handshake) on every single turn.
 _client: anthropic.Anthropic | None = None
@@ -293,6 +287,10 @@ def ask(
         timeline.append((label, time.monotonic() - t0))
         return result
     language_name = LANGUAGE_NAMES[language]
+
+    lang_tools = get_tools_for_language(language)
+    lang_tools_cached = [*lang_tools[:-1], {**lang_tools[-1], "cache_control": {"type": "ephemeral"}}] if lang_tools else lang_tools
+
     # The datetime/memory block is computed fresh per call (a long-running
     # daemon always needs the actual current time, and a fact remembered
     # mid-conversation must be visible on the very next turn) but kept as a
@@ -303,6 +301,7 @@ def ask(
         {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
     ]
+
     messages = (history or []) + [
         {"role": "user", "content": f"[The user spoke in {language_name}] {user_text}"}
     ]
@@ -311,7 +310,7 @@ def ask(
         response = _timed(
             "claude",
             client.messages.create,
-            model=CLAUDE_MODEL, max_tokens=300, system=system_blocks, tools=_TOOLS_CACHED, messages=messages,
+            model=CLAUDE_MODEL, max_tokens=300, system=system_blocks, tools=lang_tools_cached, messages=messages,
         )
         if response.stop_reason == "tool_use" and on_tool_call is not None:
             try:
@@ -332,10 +331,15 @@ def ask(
                 if block.type == "tool_use"
             ]
             messages.append({"role": "user", "content": tool_results})
+            # Recompute system blocks in case a tool (like set_voice_mode or remember) updated the state
+            system_blocks = [
+                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+            ]
             response = _timed(
                 "claude",
                 client.messages.create,
-                model=CLAUDE_MODEL, max_tokens=300, system=system_blocks, tools=_TOOLS_CACHED, messages=messages,
+                model=CLAUDE_MODEL, max_tokens=300, system=system_blocks, tools=lang_tools_cached, messages=messages,
             )
 
         if response.stop_reason == "tool_use":
@@ -346,13 +350,17 @@ def ask(
             # read aloud verbatim once. Discard it and force one final,
             # tool-free turn on the same history so Claude commits to its
             # best answer from what it's already gathered.
+            system_blocks = [
+                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+            ]
             response = _timed(
                 "claude_forced_final",
                 client.messages.create,
                 model=CLAUDE_MODEL,
                 max_tokens=300,
                 system=system_blocks,
-                tools=_TOOLS_CACHED,
+                tools=lang_tools_cached,
                 tool_choice={"type": "none"},
                 messages=messages,
             )

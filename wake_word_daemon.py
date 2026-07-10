@@ -177,6 +177,18 @@ def _handle_conversation(
     comes in soon enough (see CONTINUATION_WINDOW_SECONDS) -- otherwise this
     always starts blank.
     """
+    # Pause Spotify music immediately when conversation starts so the microphone
+    # can hear the user's voice clearly.
+    was_playing = False
+    stop_called_in_session = False
+    try:
+        from brain import spotify
+        if spotify.is_playing():
+            was_playing = True
+            spotify.stop()
+    except Exception:
+        pass
+
     history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0
@@ -241,6 +253,13 @@ def _handle_conversation(
             t3 = time.monotonic()
             print(f"Claude: {reply}", flush=True)
 
+            # Check if user explicitly asked to stop, or if a stop-related tool was executed
+            lower_text = (text or "").lower()
+            if any(w in lower_text for w in ["עצור", "עצרי", "סטופ", "stop"]) or any(
+                "stop_music" in stage or "cancel_timer" in stage for stage, _ in ask_timeline
+            ):
+                stop_called_in_session = True
+
             t_first_audio = speak_reply(reply, out_device)
             t4 = time.monotonic()
             # "Perceived" = the silence-to-speech gap the user actually
@@ -300,6 +319,14 @@ def _handle_conversation(
         play_wav(GOODBYE_WAV, out_device)
     except PlaybackFailed as exc:
         print(f"Goodbye chime failed: {exc}", file=sys.stderr, flush=True)
+
+    # If music was playing before and we didn't explicitly request to stop it, resume playback
+    if was_playing and not stop_called_in_session:
+        try:
+            from brain import spotify
+            spotify.resume()
+        except Exception:
+            pass
 
     return history
 
