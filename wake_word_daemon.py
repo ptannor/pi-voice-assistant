@@ -149,6 +149,9 @@ def _listen_for_wake_word(model: Model, wake_word_key: str, in_device: Device, l
             print(f"Stream status: {status}", file=sys.stderr, flush=True)
         audio_queue.put(indata[:, 0].copy())
 
+    # Reset model states before listening for a fresh wake word trigger
+    model.reset()
+
     with sd.InputStream(
         device=in_device.index,
         channels=1,
@@ -183,6 +186,9 @@ def _play_wav_with_barge_in(
     except Exception as exc:
         print(f"Error loading WAV for playback: {exc}", file=sys.stderr)
         return False
+
+    # Reset the stateful wake word model's hidden states so it forgets the previous trigger
+    model.reset()
 
     # Start playback asynchronously
     sd.play(audio, samplerate=sample_rate, device=out_device.index)
