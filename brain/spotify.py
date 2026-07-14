@@ -155,6 +155,57 @@ def _clean_hebrew_query(query: str) -> str:
     return " ".join(query.split())
 
 
+def _get_recommendations(sp, track) -> list[str]:
+    """Generates a list of track URIs of the same style/artist to play after the target track."""
+    import random
+    uris = []
+    try:
+        artists = track.get("artists", [])
+        if not artists:
+            return uris
+        
+        primary_artist = artists[0]["name"]
+        
+        # 1. Fetch top tracks by the same artist (up to 8 tracks)
+        results = sp.search(q=f'artist:"{primary_artist}"', type="track", limit=10)
+        items = results.get("tracks", {}).get("items", [])
+        for item in items:
+            uri = item.get("uri")
+            if uri and uri != track["uri"] and uri not in uris:
+                uris.append(uri)
+                
+        # 2. Add some variety by mixing in top tracks from similar/compatible artists
+        is_hebrew = any('\u0590' <= c <= '\u05fe' for c in primary_artist)
+        if is_hebrew:
+            # Popular Hebrew artists list
+            hebrew_artists = ["חנן בן ארי", "ישי ריבו", "עומר אדם", "עדן חסון", "אושר כהן", "טונה", "רביד פלוטניק", "בניה ברבי"]
+            compat = [a for a in hebrew_artists if a.lower() != primary_artist.lower()]
+            if compat:
+                selected_artists = random.sample(compat, min(2, len(compat)))
+                for artist in selected_artists:
+                    res = sp.search(q=f'artist:"{artist}"', type="track", limit=3)
+                    for item in res.get("tracks", {}).get("items", []):
+                        uri = item.get("uri")
+                        if uri and uri != track["uri"] and uri not in uris:
+                            uris.append(uri)
+        else:
+            # Popular English artists list
+            english_artists = ["Billy Joel", "Elton John", "Coldplay", "Ed Sheeran", "Adele", "OneRepublic", "Queen"]
+            compat = [a for a in english_artists if a.lower() != primary_artist.lower()]
+            if compat:
+                selected_artists = random.sample(compat, min(2, len(compat)))
+                for artist in selected_artists:
+                    res = sp.search(q=f'artist:"{artist}"', type="track", limit=3)
+                    for item in res.get("tracks", {}).get("items", []):
+                        uri = item.get("uri")
+                        if uri and uri != track["uri"] and uri not in uris:
+                            uris.append(uri)
+    except Exception as exc:
+        print(f"Failed to generate recommendations: {exc}", file=sys.stderr)
+        
+    return uris[:15]
+
+
 def play(query: str) -> str:
     """Search for `query` and start playing the top matching track (or play a URI directly).
     Returns a short status string for Claude to relay; raises SpotifyError on failure."""
@@ -184,7 +235,10 @@ def play(query: str) -> str:
                 _run_applescript(f'tell application "Spotify" to play track "{track["uri"]}"')
                 return f"status: playing, track: {track['name']}, artist: {artists}"
             return "status: error_no_active_device"
-        sp.start_playback(device_id=device_id, uris=[track["uri"]])
+        
+        # Play the target track followed by tracks of the same style/artist
+        rec_uris = _get_recommendations(sp, track)
+        sp.start_playback(device_id=device_id, uris=[track["uri"]] + rec_uris)
     except SpotifyError:
         raise
     except Exception as exc:
