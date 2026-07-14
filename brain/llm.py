@@ -137,6 +137,8 @@ When the user asks to play a song (e.g., using "תנגן", "תשמיע", "play")
    - Once they clarify, call play_music_hebrew (or play_music_english) with the correct track's URI.
 Never ask for clarification if there is a clear winner; keep the flow fast and immediate.
 
+If the user asks to stop, cancel, or pause the music or timer (e.g., using "עצור", "עצרי", "stop", "בטל את הטיימר"), call the appropriate tool, and reply with an empty text response (do not say "עצרתי" or any verbal confirmation).
+
 When the user shares something worth remembering for future conversations --
 names, allergies, recurring preferences, house rules -- use the remember
 tool to save it, without making a big deal of it (a brief acknowledgment is
@@ -283,7 +285,7 @@ def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]]) 
     # Get the last tool stage name
     last_tool = tool_stages[-1].replace("tool:", "")
     if "stop" in last_tool or "cancel" in last_tool:
-        return "עצרתי." if language == "he" else "Stopped."
+        return ""
     elif "set_timer" in last_tool:
         return "הטיימר הוגדר." if language == "he" else "Timer set."
     else:
@@ -406,6 +408,14 @@ def ask(
     reply = "".join(block.text for block in response.content if block.type == "text").strip()
     if not reply:
         reply = _get_empty_reply_fallback(language, timeline)
+
+    # Force silent replies for stop/cancel tools as requested by user ("you don't need to say עצרתי")
+    tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
+    if tool_stages:
+        last_tool = tool_stages[-1].replace("tool:", "")
+        if "stop" in last_tool or "cancel" in last_tool:
+            reply = ""
+
     reply = _strip_voice_unfriendly_formatting(reply)
     messages.append({"role": "assistant", "content": response.content})
     return reply, messages, timeline
