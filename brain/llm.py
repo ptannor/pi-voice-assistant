@@ -284,7 +284,7 @@ def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]]) 
     
     # Get the last tool stage name
     last_tool = tool_stages[-1].replace("tool:", "")
-    if "stop" in last_tool or "cancel" in last_tool:
+    if "stop" in last_tool or "cancel" in last_tool or "play_music" in last_tool:
         return ""
     elif "set_timer" in last_tool:
         return "הטיימר הוגדר." if language == "he" else "Timer set."
@@ -409,12 +409,15 @@ def ask(
     if not reply:
         reply = _get_empty_reply_fallback(language, timeline)
 
-    # Force silent replies for stop/cancel tools as requested by user ("you don't need to say עצרתי")
+    # Force silent replies for stop/cancel/play tools as requested by user ("you don't need to say עצרתי" or "בוצע")
     tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
     if tool_stages:
         last_tool = tool_stages[-1].replace("tool:", "")
         if "stop" in last_tool or "cancel" in last_tool:
             reply = ""
+        elif "play_music" in last_tool:
+            if reply in ("בוצע", "בוצע.", "עצרתי", "עצרתי.", "Done", "Done.", "Stopped", "Stopped."):
+                reply = ""
 
     reply = _strip_voice_unfriendly_formatting(reply)
     messages.append({"role": "assistant", "content": response.content})
