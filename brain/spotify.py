@@ -324,17 +324,17 @@ def stop() -> str:
         if device_id is None:
             if _local_spotify_running():
                 _run_applescript('tell application "Spotify" to pause')
-                return "Stopped the music."
-            return "There's no active Spotify device to stop."
+                return "status: stopped"
+            return "status: error_no_active_device"
         sp.pause_playback(device_id=device_id)
     except SpotifyError:
         raise
     except Exception as exc:
         err_msg = str(exc)
         if "Restriction violated" in err_msg or "already paused" in err_msg.lower():
-            return "Stopped the music (already paused)."
+            return "status: stopped"
         raise SpotifyError(f"Couldn't stop Spotify: {exc}") from exc
-    return "Stopped the music."
+    return "status: stopped"
 
 
 def is_playing() -> bool:

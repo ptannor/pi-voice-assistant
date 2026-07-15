@@ -421,15 +421,15 @@ def ask(
         last_tool = tool_stages[-1].replace("tool:", "")
         if "stop" in last_tool or "cancel" in last_tool:
             reply = ""
-        elif "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool:
-            # If the playback tool successfully resumed, seeked, or skipped, force the response to be completely silent
+        elif "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool or "stop_music" in last_tool:
+            # If the playback tool successfully played, resumed, seeked, skipped, or stopped, force the response to be completely silent
             is_silent_success = False
             for msg in reversed(messages):
                 if msg.get("role") == "user" and isinstance(msg.get("content"), list):
                     for content in msg["content"]:
                         if content.get("type") == "tool_result":
                             res_str = str(content.get("content"))
-                            if "status: resumed" in res_str or "status: seeked" in res_str or "status: skipped" in res_str:
+                            if "status: playing" in res_str or "status: resumed" in res_str or "status: seeked" in res_str or "status: skipped" in res_str or "status: stopped" in res_str:
                                 is_silent_success = True
                                 break
                 if is_silent_success:
