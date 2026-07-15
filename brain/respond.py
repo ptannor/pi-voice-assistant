@@ -65,6 +65,9 @@ def _split_first_sentence(text: str) -> tuple[str, str] | None:
 
 def speak_reply_chunks(text: str) -> tuple[list[Path], float]:
     """Synthesize reply and return a list of WAV files to play, and time-to-first-audio."""
+    text = (text or "").strip()
+    if not text:
+        return [], 0.0
     t_start = time.monotonic()
     split = _split_first_sentence(text)
     if split is None:
@@ -91,6 +94,9 @@ def speak_reply(text: str, out_device: Device) -> float:
     so it falls back to a plain synthesize-then-play with no added
     complexity.
     """
+    text = (text or "").strip()
+    if not text:
+        return 0.0
     chunks, t_first_audio = speak_reply_chunks(text)
     for wav in chunks:
         play_wav(wav, out_device)
