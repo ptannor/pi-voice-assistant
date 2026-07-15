@@ -183,7 +183,8 @@ def _play_wav_with_barge_in(
     """
     from audio_check.player import _load_wav
     try:
-        audio, sample_rate = _load_wav(filepath)
+        target_sr = int(out_device.default_samplerate)
+        audio, sample_rate = _load_wav(filepath, target_sr=target_sr)
     except Exception as exc:
         print(f"Error loading WAV for playback: {exc}", file=sys.stderr)
         return False
