@@ -39,6 +39,7 @@ import openwakeword
 import sounddevice as sd
 from openwakeword.model import Model
 
+from brain.audio_focus import Channel, manager as focus
 from audio_check.config import DEFAULT_CONFIG
 from audio_check.devices import Device, find_input_device, find_output_device
 from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed
@@ -230,6 +231,13 @@ def _play_wav_with_barge_in(
         callback=callback,
     ):
         while time.monotonic() - start_time < duration:
+            # A higher-priority channel (a timer alarm) firing mid-reply must
+            # preempt this spoken reply immediately -- the reply is abandoned,
+            # not queued behind the alarm. See brain/audio_focus.py.
+            if focus.is_preempted(Channel.DIALOG):
+                print("Reply preempted by a higher-priority alarm; stopping playback.", flush=True)
+                sd.stop()
+                break
             try:
                 pcm = audio_queue.get(timeout=0.1)
                 prediction = model.predict(pcm)
@@ -261,25 +269,14 @@ def _handle_conversation(
     comes in soon enough (see CONTINUATION_WINDOW_SECONDS) -- otherwise this
     always starts blank.
     """
-    # Pause Spotify music immediately when conversation starts so the microphone
-    # can hear the user's voice clearly.
-    was_playing = False
-    # Distinguishes "a timer's end-of-timer track, dismissed by the wake word
-    # itself" from "regular music paused mid-conversation" -- the former
-    # should never come back once acknowledged; the latter should resume
-    # exactly as before. See brain/timer.py's is_alarm_ringing/acknowledge_alarm.
-    was_alarm = False
-    stop_called_in_session = False
-    try:
-        from brain import spotify, timer
-        if spotify.is_playing():
-            was_playing = True
-            was_alarm = timer.is_alarm_ringing()
-            spotify.stop()
-            if was_alarm:
-                timer.acknowledge_alarm()
-    except Exception:
-        pass
+    # Acquire the DIALOG audio-focus channel for the duration of this
+    # conversation. This pauses (and snapshots) any Spotify music so the mic
+    # can hear the user clearly and so the exact track/position can be resumed
+    # afterward, and -- if the user woke up on a ringing alarm -- dismisses that
+    # alarm. See brain/audio_focus.py; the earlier ad-hoc was_playing/was_alarm/
+    # stop_called_in_session flags are now all handled by the focus manager.
+    focus.acquire(Channel.DIALOG)
+    preempted = False
 
     history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
@@ -352,12 +349,25 @@ def _handle_conversation(
             t3 = time.monotonic()
             print(f"Claude: {reply}", flush=True)
 
-            # Check if user explicitly asked to stop, or if a stop-related tool was executed
+            # Decide whether the music should stay stopped (no resume) after
+            # this conversation. Tell "stop the music" apart from "stop the
+            # alarm": the latter must NOT suppress the music resume.
+            #   * If we woke up on a ringing alarm, any "stop" targets the alarm
+            #     -> leave the music to resume (dialog_opened_on_alert short-
+            #     circuits everything else).
+            #   * An explicit stop_music tool -> the user stopped the music.
+            #   * A bare "stop" with no timer/alarm in play -> stop the music.
+            #   * cancel_timer -> stops the timer only; music still resumes.
             lower_text = (text or "").lower()
-            if any(w in lower_text for w in ["עצור", "עצרי", "סטופ", "stop"]) or any(
-                "stop_music" in stage or "cancel_timer" in stage for stage, _ in ask_timeline
-            ):
-                stop_called_in_session = True
+            said_stop = any(w in lower_text for w in ["עצור", "עצרי", "סטופ", "stop"])
+            stop_music_ran = any("stop_music" in stage for stage, _ in ask_timeline)
+            cancel_timer_ran = any("cancel_timer" in stage for stage, _ in ask_timeline)
+            if focus.dialog_opened_on_alert():
+                pass
+            elif stop_music_ran:
+                focus.mark_content_stopped()
+            elif said_stop and not cancel_timer_ran and not focus.alert_active():
+                focus.mark_content_stopped()
 
             # Synthesize reply to WAV chunks
             chunks, t_first_audio = speak_reply_chunks(reply)
@@ -367,6 +377,9 @@ def _handle_conversation(
             for wav in chunks:
                 barge_in = _play_wav_with_barge_in(wav, in_device, out_device, model, wake_word_key)
                 wav.unlink(missing_ok=True)
+                if focus.is_preempted(Channel.DIALOG):
+                    preempted = True
+                    break
                 if barge_in:
                     break
 
@@ -395,6 +408,9 @@ def _handle_conversation(
                 "reply_chars": len(reply),
             })
 
+            if preempted:
+                break  # an alarm took over -- abandon this conversation entirely
+
             if barge_in:
                 timeout = INITIAL_QUERY_TIMEOUT
                 continue
@@ -418,19 +434,20 @@ def _handle_conversation(
     # Every exit from the loop above (silence timeout, closing phrase, turn
     # cap, or an error) falls through to here -- one clear signal that it's
     # stopped listening, distinct from the ascending "now listening" chime.
-    try:
-        play_wav(GOODBYE_WAV, out_device)
-    except PlaybackFailed as exc:
-        print(f"Goodbye chime failed: {exc}", file=sys.stderr, flush=True)
-
-    # If music was playing before and we didn't explicitly request to stop it, resume playback --
-    # but never for a timer alarm the wake word already dismissed (see was_alarm above).
-    if was_playing and not was_alarm and not stop_called_in_session:
+    # Skip it when an alarm preempted us: the alarm is what should be audible,
+    # not a goodbye chime played over it.
+    if not preempted:
         try:
-            from brain import spotify
-            spotify.resume()
-        except Exception:
-            pass
+            play_wav(GOODBYE_WAV, out_device)
+        except PlaybackFailed as exc:
+            print(f"Goodbye chime failed: {exc}", file=sys.stderr, flush=True)
+
+    # Release the DIALOG channel. The focus manager resumes the paused music
+    # here -- exact track/position with a short fade-in -- unless it was
+    # explicitly stopped or a higher-priority alarm still holds focus (e.g. we
+    # were preempted, in which case the music stays paused until the alarm is
+    # dismissed).
+    focus.release(Channel.DIALOG)
 
     return history
 

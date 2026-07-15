@@ -1,16 +1,11 @@
 import threading
 import time
 from . import spotify
+from .audio_focus import Channel, manager as focus
 
 
 _active_timer_thread = None
 _stop_event = threading.Event()
-# True from the moment a timer's end-of-timer track starts until the wake
-# word acknowledges it -- lets wake_word_daemon.py tell "an alarm the user
-# just dismissed by saying the wake word" apart from "regular music paused
-# mid-conversation," which should resume afterward while an alarm shouldn't
-# (see is_alarm_ringing/acknowledge_alarm below).
-_alarm_ringing = False
 
 _REGULAR_TRACK = "spotify:track:70C4NyhjD5OZUMzvWZ3njJ"  # Piano Man, Billy Joel
 # Requested (one of the kids, in Hebrew): timers longer than 15 minutes get
@@ -39,8 +34,11 @@ def set_timer(duration_seconds: int) -> str:
             elapsed += 1
 
         if not _stop_event.is_set():
-            global _alarm_ringing
-            _alarm_ringing = True
+            # Grab the ALERT channel first: this snapshots+pauses any music the
+            # user had playing (so it can resume after the alarm is dismissed)
+            # and preempts an in-progress spoken reply, before the alarm track
+            # takes over the Spotify device.
+            focus.acquire(Channel.ALERT)
             try:
                 if duration_seconds > _LONG_TIMER_THRESHOLD_SECONDS:
                     print("Timer finished! Playing Hedwig's Theme (long timer).", flush=True)
@@ -58,14 +56,16 @@ def set_timer(duration_seconds: int) -> str:
 
 def cancel_timer() -> str:
     """Cancels the currently running background timer and stops Spotify music."""
-    global _active_timer_thread, _stop_event, _alarm_ringing
+    global _active_timer_thread, _stop_event
     stopped_music = False
     try:
         spotify.stop()
         stopped_music = True
     except Exception:
         pass
-    _alarm_ringing = False
+    # Release the ALERT channel: dismisses a ringing alarm. Any music that was
+    # playing before the alarm resumes when the current speaking turn ends.
+    focus.release(Channel.ALERT)
 
     if _active_timer_thread and _active_timer_thread.is_alive():
         _stop_event.set()
@@ -85,15 +85,14 @@ def is_timer_active() -> bool:
 
 def is_alarm_ringing() -> bool:
     """Whether a timer's end-of-timer track is the thing currently playing
-    (as opposed to music the user started themselves) -- see
-    wake_word_daemon.py's pause/resume-on-wake-word handling.
+    (as opposed to music the user started themselves). Backed by the ALERT
+    channel of the shared audio-focus manager (see brain/audio_focus.py).
     """
-    return _alarm_ringing
+    return focus.is_active(Channel.ALERT)
 
 
 def acknowledge_alarm() -> None:
-    """Call once the wake word has paused a ringing alarm -- marks it as
-    dismissed so it's never auto-resumed afterward like regular music would be.
+    """Dismiss a ringing alarm -- releases the ALERT channel so it's never
+    auto-resumed afterward like regular music would be.
     """
-    global _alarm_ringing
-    _alarm_ringing = False
+    focus.release(Channel.ALERT)

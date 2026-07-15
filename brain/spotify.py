@@ -23,6 +23,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .config import SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, SPOTIPY_REDIRECT_URI
@@ -456,6 +457,173 @@ def resume() -> str:
             return "Resumed playback."
         raise SpotifyError(f"Couldn't resume Spotify: {exc}") from exc
     return "Resumed playback."
+
+
+# Fade-in on resume (see resume_playback_state). Ramps volume from a low floor
+# up to the level captured when playback was backgrounded, over ~1.5s, so music
+# eases back in after an interruption instead of snapping to full volume.
+_FADE_START_PERCENT = 20
+_FADE_DURATION_S = 1.5
+_FADE_STEPS = 6
+
+
+def capture_playback_state() -> dict | None:
+    """Snapshot what's playing now -- track URI, position, context, and device
+    volume -- so it can be restarted exactly where it left off later.
+
+    Spotify's own pause/resume memory is lost the moment a *different* track is
+    started on the same Connect device (e.g. a timer alarm plays over the music,
+    see brain/timer.py). Capturing the position explicitly is what lets the
+    original song resume after the alarm is dismissed. Returns None if nothing
+    is playing / state can't be read."""
+    try:
+        sp = _get_client()
+    except SpotifyError:
+        sp = None
+    if sp is not None:
+        try:
+            pb = sp.current_playback()
+            if pb and pb.get("item"):
+                item = pb["item"]
+                device = pb.get("device") or {}
+                ctx = pb.get("context") or {}
+                return {
+                    "source": "web",
+                    "uri": item.get("uri"),
+                    "position_ms": pb.get("progress_ms", 0) or 0,
+                    "context_uri": ctx.get("uri"),
+                    "volume": device.get("volume_percent"),
+                    "device_id": device.get("id"),
+                }
+        except Exception:
+            pass
+    if _local_spotify_running():
+        uri = _run_applescript('tell application "Spotify" to get id of current track')
+        pos = _run_applescript('tell application "Spotify" to get player position')
+        vol = _run_applescript('tell application "Spotify" to get sound volume')
+        try:
+            position_ms = int(float(pos) * 1000)
+        except (TypeError, ValueError):
+            position_ms = 0
+        try:
+            volume = int(vol)
+        except (TypeError, ValueError):
+            volume = None
+        return {
+            "source": "applescript",
+            "uri": uri,
+            "position_ms": position_ms,
+            "context_uri": None,
+            "volume": volume,
+            "device_id": None,
+        }
+    return None
+
+
+def _fade_volume_web(sp, device_id: str, target: int, abort_check) -> None:
+    start = min(_FADE_START_PERCENT, target)
+    step_dt = _FADE_DURATION_S / _FADE_STEPS
+    try:
+        for i in range(1, _FADE_STEPS + 1):
+            if abort_check is not None and abort_check():
+                break
+            vol = int(start + (target - start) * i / _FADE_STEPS)
+            sp.volume(vol, device_id=device_id)
+            time.sleep(step_dt)
+    except Exception:
+        pass
+    finally:
+        # Always land on the intended level: a mid-ramp failure (e.g. a 429
+        # volume rate-limit) or an abort must never strand the music quiet.
+        try:
+            sp.volume(target, device_id=device_id)
+        except Exception:
+            pass
+
+
+def _fade_volume_applescript(target: int, abort_check) -> None:
+    start = min(_FADE_START_PERCENT, target)
+    step_dt = _FADE_DURATION_S / _FADE_STEPS
+    try:
+        for i in range(1, _FADE_STEPS + 1):
+            if abort_check is not None and abort_check():
+                break
+            vol = int(start + (target - start) * i / _FADE_STEPS)
+            _run_applescript(f'tell application "Spotify" to set sound volume to {vol}')
+            time.sleep(step_dt)
+    finally:
+        _run_applescript(f'tell application "Spotify" to set sound volume to {target}')
+
+
+def resume_playback_state(state: dict | None, fade: bool = True, abort_check=None) -> str:
+    """Resume the playback captured by capture_playback_state(), restarting the
+    exact track at its saved position and (if fade) ramping volume back up.
+
+    `abort_check` is polled between fade steps; if it returns True (e.g. a
+    higher-priority alarm has just grabbed the device) the ramp stops early but
+    still restores the target volume. Best-effort: falls back to a bare resume()
+    if the snapshot is missing or the explicit restart fails, so a resume never
+    silently leaves the music stopped."""
+    if not state or not state.get("uri"):
+        return resume()
+
+    target_vol = state.get("volume")
+    if not isinstance(target_vol, int) or target_vol <= 0:
+        target_vol = None
+        fade = False
+
+    if state.get("source") == "web":
+        try:
+            sp = _get_client()
+        except SpotifyError:
+            return resume()
+        device_id = state.get("device_id") or _active_device_id(sp)
+        if fade and device_id and target_vol:
+            try:
+                sp.volume(min(_FADE_START_PERCENT, target_vol), device_id=device_id)
+            except Exception:
+                fade = False
+        try:
+            if state.get("context_uri"):
+                sp.start_playback(
+                    device_id=device_id,
+                    context_uri=state["context_uri"],
+                    offset={"uri": state["uri"]},
+                    position_ms=state["position_ms"],
+                )
+            else:
+                sp.start_playback(
+                    device_id=device_id,
+                    uris=[state["uri"]],
+                    position_ms=state["position_ms"],
+                )
+        except Exception:
+            if target_vol and device_id:
+                try:
+                    sp.volume(target_vol, device_id=device_id)
+                except Exception:
+                    pass
+            return resume()
+        if fade and device_id and target_vol:
+            _fade_volume_web(sp, device_id, target_vol, abort_check)
+        return "status: resumed"
+
+    # AppleScript (local macOS Spotify) fallback
+    uri = state.get("uri") or ""
+    if not _SPOTIFY_URI_RE.match(uri):
+        _run_applescript('tell application "Spotify" to play')
+        return "status: resumed"
+    if fade and target_vol:
+        _run_applescript(
+            f'tell application "Spotify" to set sound volume to {min(_FADE_START_PERCENT, target_vol)}'
+        )
+    _run_applescript(f'tell application "Spotify" to play track "{uri}"')
+    _run_applescript(
+        f'tell application "Spotify" to set player position to {state["position_ms"] / 1000.0}'
+    )
+    if fade and target_vol:
+        _fade_volume_applescript(target_vol, abort_check)
+    return "status: resumed"
 
 
 def search_track(query: str) -> str:
