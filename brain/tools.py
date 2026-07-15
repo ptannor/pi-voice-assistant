@@ -481,6 +481,35 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
     if name == "cancel_timer_hebrew":
         return timer.cancel_timer()
 
+    if name == "tell_joke_hebrew":
+        import random
+        queries = [
+            "בדיחה קצרה מצחיקה לילדים",
+            "בדיחות קצרות ומצחיקות",
+            "בדיחה מצחיקה רצח",
+            "בדיחה קורעת מצחיקה",
+            "בדיחות קרש מצחיקות לילדים"
+        ]
+        q = random.choice(queries)
+        try:
+            return search(q)
+        except WebSearchError as exc:
+            return f"Error fetching jokes from Google: {exc}"
+
+    if name == "tell_joke_english":
+        import random
+        queries = [
+            "funny short dad joke family friendly",
+            "clean hilarious short joke",
+            "funny one liner jokes kids",
+            "silly family friendly joke of the day"
+        ]
+        q = random.choice(queries)
+        try:
+            return search(q)
+        except WebSearchError as exc:
+            return f"Error fetching jokes from Google: {exc}"
+
     return (
         f"The '{name}' feature isn't built yet. Tell the user plainly that this "
         "isn't available right now -- don't imply it happened."
