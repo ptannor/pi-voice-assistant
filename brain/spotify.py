@@ -92,6 +92,9 @@ def _get_client():
     return _client
 
 
+_SPOTIFY_URI_RE = re.compile(r"^spotify:(track|episode|show|playlist|album):[A-Za-z0-9]+$")
+
+
 def _run_applescript(script: str) -> str | None:
     if sys.platform != "darwin":
         return None
@@ -315,6 +318,8 @@ def play(query: str) -> str:
         device_id = _active_device_id(sp)
         if device_id is None:
             if _local_spotify_running():
+                if not _SPOTIFY_URI_RE.match(uri):
+                    raise SpotifyError(f"Refusing to pass malformed URI to AppleScript: {uri!r}")
                 _run_applescript(f'tell application "Spotify" to play track "{uri}"')
                 return f"status: playing, track: {name}, artist: {artists}"
             return "status: error_no_active_device"
