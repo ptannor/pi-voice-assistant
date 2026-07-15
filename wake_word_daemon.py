@@ -15,8 +15,25 @@ import sys
 import tempfile
 import time
 import wave
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+# Global state for Spotify playback status to adjust wake word threshold dynamically
+spotify_is_playing = False
+
+def _poll_spotify_status():
+    global spotify_is_playing
+    try:
+        from brain import spotify
+    except Exception:
+        return
+    while True:
+        try:
+            spotify_is_playing = spotify.is_playing()
+        except Exception:
+            spotify_is_playing = False
+        time.sleep(3.0)
 
 import openwakeword
 import sounddevice as sd
@@ -68,7 +85,7 @@ ACK_DURATION_SECONDS = _wav_duration_seconds(ACK_WAV)
 WAKE_WORD = "alexa"  # pretrained fallback -- see _load_wake_word_model below
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
-DETECTION_THRESHOLD = 0.6
+DETECTION_THRESHOLD = 0.45  # Lowered from 0.6 to make triggering Alexa easier over background noise and music
 COOLDOWN_SECONDS = 2.0  # ignore re-triggers right as we resume listening
 # How long to wait for the user to start talking before giving up.
 INITIAL_QUERY_TIMEOUT = 4.0
@@ -166,7 +183,8 @@ def _listen_for_wake_word(model: Model, wake_word_key: str, in_device: Device, l
             prediction = model.predict(pcm)
             score = prediction.get(wake_word_key, 0.0)
             now = time.monotonic()
-            if score > DETECTION_THRESHOLD and (now - last_trigger) > COOLDOWN_SECONDS:
+            current_threshold = 0.35 if spotify_is_playing else DETECTION_THRESHOLD
+            if score > current_threshold and (now - last_trigger) > COOLDOWN_SECONDS:
                 print(f"Wake word detected: {wake_word_key} (score={score:.2f})", flush=True)
                 return now
 
@@ -421,6 +439,10 @@ def main() -> None:
     last_trigger = 0.0
     last_conversation_end = float("-inf")
     last_history: list[dict] | None = None
+
+    # Start the Spotify background poll thread to dynamically adjust wake word sensitivity
+    threading.Thread(target=_poll_spotify_status, daemon=True).start()
+
     while True:
         last_trigger = _listen_for_wake_word(model, wake_word_key, in_device, last_trigger)
 
