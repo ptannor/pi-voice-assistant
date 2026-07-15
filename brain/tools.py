@@ -338,6 +338,36 @@ TOOLS = [
             "required": ["seconds"],
         },
     },
+    {
+        "name": "skip_track_hebrew",
+        "description": "Skip the current song and play the next song, or go back to play the previous song on Spotify.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["next", "previous"],
+                    "description": "The direction to skip. Use 'next' to go to the next song, and 'previous' to go to the previous song. Default is 'next'.",
+                }
+            },
+            "required": ["direction"],
+        },
+    },
+    {
+        "name": "skip_track_english",
+        "description": "Skip the current song and play the next song, or go back to play the previous song on Spotify.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["next", "previous"],
+                    "description": "The direction to skip. Use 'next' to go to the next song, and 'previous' to go to the previous song. Default is 'next'.",
+                }
+            },
+            "required": ["direction"],
+        },
+    },
 ]
 
 # Tools not listed here default to both languages.
@@ -348,6 +378,8 @@ TOOL_LANGUAGES: dict[str, list[str]] = {
     "tell_joke_hebrew": ["he"],
     "seek_music_hebrew": ["he"],
     "seek_music_english": ["en"],
+    "skip_track_hebrew": ["he"],
+    "skip_track_english": ["en"],
     # Music playback is split by language: Hebrew tools are Hebrew-only,
     # English tools are English-only.
     "play_music_hebrew": ["he"],
@@ -430,6 +462,12 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
             return spotify.seek(tool_input["seconds"])
         except spotify.SpotifyError as exc:
             return f"status: error_seek_failed, details: {exc}"
+
+    if name in ("skip_track_hebrew", "skip_track_english"):
+        try:
+            return spotify.skip_track(tool_input.get("direction", "next"))
+        except spotify.SpotifyError as exc:
+            return f"status: error_skip_failed, details: {exc}"
 
     if name in ("stop_music_hebrew", "stop_music_english"):
         try:

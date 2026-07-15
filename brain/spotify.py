@@ -291,6 +291,30 @@ def seek(seconds: int) -> str:
         raise SpotifyError(f"Spotify seek failed: {exc}") from exc
 
 
+def skip_track(direction: str = "next") -> str:
+    """Skip to the next or previous track. direction can be 'next' or 'previous'.
+    Returns a status string; raises SpotifyError on failure."""
+    sp = _get_client()
+    try:
+        device_id = _active_device_id(sp)
+        if device_id is None:
+            if _local_spotify_running():
+                cmd = "next track" if direction == "next" else "previous track"
+                _run_applescript(f'tell application "Spotify" to {cmd}')
+                return "status: skipped"
+            return "status: error_no_active_device"
+
+        if direction == "next":
+            sp.next_track(device_id=device_id)
+        else:
+            sp.previous_track(device_id=device_id)
+        return "status: skipped"
+    except SpotifyError:
+        raise
+    except Exception as exc:
+        raise SpotifyError(f"Spotify skip track failed: {exc}") from exc
+
+
 def stop() -> str:
     """Pause playback on the active device. Returns a short status string;
     raises SpotifyError on failure."""
