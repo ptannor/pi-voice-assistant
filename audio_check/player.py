@@ -27,6 +27,10 @@ def _load_wav(filepath: Path) -> tuple[np.ndarray, int]:
     audio = np.frombuffer(raw, dtype=dtype)
     if channels > 1:
         audio = audio.reshape(-1, channels)
+    else:
+        # Convert mono (1 channel) to stereo (2 channels) to prevent static noise
+        # from low-quality driver-level mono-to-stereo emulation on DACs/speakers.
+        audio = np.column_stack((audio, audio))
     return audio, sample_rate
 
 
