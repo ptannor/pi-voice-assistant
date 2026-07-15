@@ -190,8 +190,8 @@ def _play_wav_with_barge_in(
     # Reset the stateful wake word model's hidden states so it forgets the previous trigger
     model.reset()
 
-    # Start playback asynchronously
-    sd.play(audio, samplerate=sample_rate, device=out_device.index)
+    # Start playback asynchronously with higher latency to prevent CPU/GIL starvation static noise
+    sd.play(audio, samplerate=sample_rate, device=out_device.index, latency='high')
     duration = len(audio) / sample_rate
     start_time = time.monotonic()
 
