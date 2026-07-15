@@ -135,7 +135,7 @@ When the user asks to resume, resume playing, or continue playing paused music (
 
 When the user asks to seek, skip, skip forward, skip backward, fast forward, or rewind in the current song (e.g., "דלג 30 שניות קדימה", "תחזיר דקה אחורה", "fast forward 20 seconds", "דלג קדימה"), determine the number of seconds to shift (use a positive number of seconds to skip forward, or a negative number to go backward) and call the seek_music_hebrew (or seek_music_english) tool.
 
-When the user asks to skip the entire song, skip this song, go to the next song/track, or go back to the previous song/track (e.g., "דלג לשיר הבא", "דלג על השיר", "השיר הבא", "תחזור לשיר הקודם", "הקודם", "skip track"), determine the direction ("next" or "previous") and call the skip_track_hebrew (or skip_track_english) tool.
+When the user asks to skip the entire song, skip this song, go to the next song/track, or go back to the previous song/track (e.g., "דלג לשיר הבא", "דלג על השיר", "השיר הבא", "תחזור לשיר הקודם", "הקודם", "skip track", "נקסט", "נקס", "סקייפ", "תעביר", "תעבירי"), determine the direction ("next" or "previous") and call the skip_track_hebrew (or skip_track_english) tool.
 
 If the user asks to stop, cancel, or pause the music or timer (e.g., using "עצור", "עצרי", "stop", "בטל את הטיימר"), call the appropriate tool, and reply with an empty text response (do not say "עצרתי" or any verbal confirmation).
 
