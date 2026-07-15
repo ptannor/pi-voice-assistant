@@ -120,6 +120,12 @@ def transcribe(wav_path: Path, forced_language: str | None = None) -> tuple[str,
     except Exception as exc:
         raise TranscriptionError(f"Groq transcription failed: {exc}") from exc
 
+    # Defensive phonetic correction: "it's so" is a classic Whisper mishearing of the Hebrew command "עצור" (stop)
+    clean_text = text.replace("!", "").replace(".", "").replace(",", "").strip().lower()
+    if clean_text in ("it's so", "its so", "it is so"):
+        text = "עצור"
+        language = "he"
+
     # Defensive final check: trust an unambiguous Hebrew script even if the
     # English-forced attempt somehow scored higher confidence (or was forced).
     if language == "en" and HEBREW_RE.search(text):
