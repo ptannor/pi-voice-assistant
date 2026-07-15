@@ -68,13 +68,13 @@ TOOLS = [
     # Music / volume
     {
         "name": "play_music_hebrew",
-        "description": "Play a song, artist, or genre of music using a search query or exact Spotify track URI.",
+        "description": "Play a song, artist, or genre of music on Spotify. To resume or continue paused music, pass 'resume' as the query.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The query to search/play, or a direct track URI (e.g., 'spotify:track:...').",
+                    "description": "The song query, direct URI, or 'resume' to continue playback.",
                 }
             },
             "required": ["query"],
@@ -101,13 +101,13 @@ TOOLS = [
     },
     {
         "name": "play_music_english",
-        "description": "Play a song, artist, or genre of music using a search query or exact Spotify track URI.",
+        "description": "Play a song, artist, or genre of music on Spotify. To resume or continue paused music, pass 'resume' as the query.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The query to search/play, or a direct track URI (e.g., 'spotify:track:...').",
+                    "description": "The song query, direct URI, or 'resume' to continue playback.",
                 }
             },
             "required": ["query"],

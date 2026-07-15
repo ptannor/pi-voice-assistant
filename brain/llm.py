@@ -137,6 +137,8 @@ When the user asks to play a song (e.g., using "תנגן", "תשמיע", "play")
    - Once they clarify, call play_music_hebrew (or play_music_english) with the correct track's URI.
 Never ask for clarification if there is a clear winner; keep the flow fast and immediate. If a search fails or no matching songs are found, explain this briefly in the user's language (e.g., in Hebrew, never in English). If a music playback tool returns "status: error_no_active_device", tell the user in Hebrew that they need to open Spotify on a device first before you can play music (e.g., "פתח בבקשה את ספוטיפיי במכשיר כלשהו תחילה").
 
+When the user asks to resume, resume playing, or continue playing paused music (e.g., using "תמשיך", "להמשיך", "resume", "continue", "play"), call play_music_hebrew (or play_music_english) with the query "resume" to continue the track from where it was paused.
+
 If the user asks to stop, cancel, or pause the music or timer (e.g., using "עצור", "עצרי", "stop", "בטל את הטיימר"), call the appropriate tool, and reply with an empty text response (do not say "עצרתי" or any verbal confirmation).
 
 When the user shares something worth remembering for future conversations --
@@ -416,8 +418,23 @@ def ask(
         if "stop" in last_tool or "cancel" in last_tool:
             reply = ""
         elif "play_music" in last_tool:
-            if reply in ("בוצע", "בוצע.", "עצרתי", "עצרתי.", "Done", "Done.", "Stopped", "Stopped."):
+            # If the playback tool successfully resumed, force the response to be completely silent
+            is_resumed_success = False
+            for msg in reversed(messages):
+                if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                    for content in msg["content"]:
+                        if content.get("type") == "tool_result" and "status: resumed" in str(content.get("content")):
+                            is_resumed_success = True
+                            break
+                if is_resumed_success:
+                    break
+
+            if is_resumed_success:
                 reply = ""
+            else:
+                clean_reply = reply.replace("!", "").replace(".", "").strip().lower()
+                if clean_reply in ("בוצע", "עצרתי", "done", "stopped", "resumed", "resuming", "music resumed", "ממשיך", "ממשיך לנגן"):
+                    reply = ""
 
     reply = _strip_voice_unfriendly_formatting(reply)
     messages.append({"role": "assistant", "content": response.content})

@@ -209,10 +209,21 @@ def _get_recommendations(sp, track) -> list[str]:
 def play(query: str) -> str:
     """Search for `query` and start playing the top matching track (or play a URI directly).
     Returns a short status string for Claude to relay; raises SpotifyError on failure."""
-    if not query:
-        return "status: error_no_query"
-
+    is_resume = not query or query.strip().lower() in ("resume", "continue", "תמשיך", "להמשיך")
     sp = _get_client()
+    try:
+        if is_resume:
+            device_id = _active_device_id(sp)
+            if device_id is None:
+                if _local_spotify_running():
+                    _run_applescript('tell application "Spotify" to play')
+                    return "status: resumed"
+                return "status: error_no_active_device"
+            sp.start_playback(device_id=device_id)
+            return "status: resumed"
+    except Exception as exc:
+        raise SpotifyError(f"Spotify resume failed: {exc}") from exc
+
     try:
         if query.startswith("spotify:track:"):
             # Fetch track details directly from the URI
