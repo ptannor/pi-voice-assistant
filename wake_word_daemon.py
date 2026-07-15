@@ -264,12 +264,20 @@ def _handle_conversation(
     # Pause Spotify music immediately when conversation starts so the microphone
     # can hear the user's voice clearly.
     was_playing = False
+    # Distinguishes "a timer's end-of-timer track, dismissed by the wake word
+    # itself" from "regular music paused mid-conversation" -- the former
+    # should never come back once acknowledged; the latter should resume
+    # exactly as before. See brain/timer.py's is_alarm_ringing/acknowledge_alarm.
+    was_alarm = False
     stop_called_in_session = False
     try:
-        from brain import spotify
+        from brain import spotify, timer
         if spotify.is_playing():
             was_playing = True
+            was_alarm = timer.is_alarm_ringing()
             spotify.stop()
+            if was_alarm:
+                timer.acknowledge_alarm()
     except Exception:
         pass
 
@@ -321,6 +329,13 @@ def _handle_conversation(
             t1 = time.monotonic()
             if recorded is None:
                 break  # nothing said -- end the conversation, back to wake-word listening
+
+            # Fire immediately, not just on tool-use turns -- the median
+            # transcribe+ask+first_audio gap is ~3.4s (p90 ~6.5s, see
+            # logs/latency.jsonl) even with no tool call, which otherwise
+            # feels like dead air. If a tool call *does* happen, on_tool_call
+            # below plays a second one partway through the longer wait.
+            play_wav_async(THINKING_WAV, out_device)
 
             stt_mode = "forced" if session_language else "dual"
             text, language = transcribe(query_wav, forced_language=session_language)
@@ -408,8 +423,9 @@ def _handle_conversation(
     except PlaybackFailed as exc:
         print(f"Goodbye chime failed: {exc}", file=sys.stderr, flush=True)
 
-    # If music was playing before and we didn't explicitly request to stop it, resume playback
-    if was_playing and not stop_called_in_session:
+    # If music was playing before and we didn't explicitly request to stop it, resume playback --
+    # but never for a timer alarm the wake word already dismissed (see was_alarm above).
+    if was_playing and not was_alarm and not stop_called_in_session:
         try:
             from brain import spotify
             spotify.resume()

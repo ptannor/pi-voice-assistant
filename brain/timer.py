@@ -5,11 +5,24 @@ from . import spotify
 
 _active_timer_thread = None
 _stop_event = threading.Event()
+# True from the moment a timer's end-of-timer track starts until the wake
+# word acknowledges it -- lets wake_word_daemon.py tell "an alarm the user
+# just dismissed by saying the wake word" apart from "regular music paused
+# mid-conversation," which should resume afterward while an alarm shouldn't
+# (see is_alarm_ringing/acknowledge_alarm below).
+_alarm_ringing = False
+
+_REGULAR_TRACK = "spotify:track:70C4NyhjD5OZUMzvWZ3njJ"  # Piano Man, Billy Joel
+# Requested (one of the kids, in Hebrew): timers longer than 15 minutes get
+# Hedwig's Theme instead of the regular track.
+_LONG_TIMER_THRESHOLD_SECONDS = 15 * 60
+_LONG_TIMER_QUERY = "Hedwig's Theme Harry Potter"
 
 
 def set_timer(duration_seconds: int) -> str:
-    """Starts a background thread that sleeps for `duration_seconds`
-    and then starts playing 'Piano Man' on Spotify.
+    """Starts a background thread that sleeps for `duration_seconds` and then
+    starts playing an end-of-timer track on Spotify -- Hedwig's Theme for
+    timers over 15 minutes, Piano Man otherwise.
     """
     global _active_timer_thread, _stop_event
 
@@ -26,12 +39,17 @@ def set_timer(duration_seconds: int) -> str:
             elapsed += 1
 
         if not _stop_event.is_set():
+            global _alarm_ringing
+            _alarm_ringing = True
             try:
-                # When the timer ends, trigger Spotify to play Piano Man
-                print("Timer finished! Playing Piano Man Billy Joel (exact track).", flush=True)
-                spotify.play("spotify:track:70C4NyhjD5OZUMzvWZ3njJ")
+                if duration_seconds > _LONG_TIMER_THRESHOLD_SECONDS:
+                    print("Timer finished! Playing Hedwig's Theme (long timer).", flush=True)
+                    spotify.play(_LONG_TIMER_QUERY)
+                else:
+                    print("Timer finished! Playing Piano Man Billy Joel (exact track).", flush=True)
+                    spotify.play(_REGULAR_TRACK)
             except Exception as e:
-                print(f"Failed to play Piano Man at timer end: {e}", flush=True)
+                print(f"Failed to play timer-end track: {e}", flush=True)
 
     _active_timer_thread = threading.Thread(target=timer_target, daemon=True)
     _active_timer_thread.start()
@@ -40,13 +58,14 @@ def set_timer(duration_seconds: int) -> str:
 
 def cancel_timer() -> str:
     """Cancels the currently running background timer and stops Spotify music."""
-    global _active_timer_thread, _stop_event
+    global _active_timer_thread, _stop_event, _alarm_ringing
     stopped_music = False
     try:
         spotify.stop()
         stopped_music = True
     except Exception:
         pass
+    _alarm_ringing = False
 
     if _active_timer_thread and _active_timer_thread.is_alive():
         _stop_event.set()
@@ -63,3 +82,18 @@ def is_timer_active() -> bool:
     global _active_timer_thread
     return _active_timer_thread is not None and _active_timer_thread.is_alive()
 
+
+def is_alarm_ringing() -> bool:
+    """Whether a timer's end-of-timer track is the thing currently playing
+    (as opposed to music the user started themselves) -- see
+    wake_word_daemon.py's pause/resume-on-wake-word handling.
+    """
+    return _alarm_ringing
+
+
+def acknowledge_alarm() -> None:
+    """Call once the wake word has paused a ringing alarm -- marks it as
+    dismissed so it's never auto-resumed afterward like regular music would be.
+    """
+    global _alarm_ringing
+    _alarm_ringing = False

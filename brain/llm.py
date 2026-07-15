@@ -333,21 +333,20 @@ def ask(
         timeline.append((label, time.monotonic() - t0))
         return result
     language_name = LANGUAGE_NAMES[language]
-
     lang_tools = get_tools_for_language(language)
-    lang_tools_cached = [*lang_tools[:-1], {**lang_tools[-1], "cache_control": {"type": "ephemeral"}}] if lang_tools else lang_tools
 
-    # The datetime/memory block is computed fresh per call (a long-running
-    # daemon always needs the actual current time, and a fact remembered
-    # mid-conversation must be visible on the very next turn) but kept as a
-    # separate, uncached system block so it doesn't bust the cache on the
-    # much larger, truly static SYSTEM_PROMPT text below -- that prompt is
-    # ~1,500 tokens resent on every single call otherwise.
-    system_blocks = [
-        {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
-    ]
-
+    # Computed fresh per call (not baked into the static SYSTEM_PROMPT, which
+    # is built once at import time) so a long-running daemon always gives
+    # Claude the actual current time, and a fact remembered mid-conversation
+    # is visible on the very next turn, not just from process restart.
+    #
+    # Not split into a separate cache_control block -- tried that, but
+    # Claude Haiku models need a ~4,096-token minimum cacheable prefix before
+    # caching engages at all (confirmed empirically: 4,009 tokens wrote 0
+    # cache tokens, 4,252 wrote a full cache entry), and this whole
+    # system+tools prompt is only ~3,900 tokens. Below that floor, marking a
+    # block cacheable is a pure no-op -- it was silently doing nothing.
+    system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()
     messages = (history or []) + [
         {"role": "user", "content": f"[The user spoke in {language_name}] {user_text}"}
     ]
@@ -356,7 +355,7 @@ def ask(
         response = _timed(
             "claude",
             client.messages.create,
-            model=CLAUDE_MODEL, max_tokens=300, system=system_blocks, tools=lang_tools_cached, messages=messages,
+            model=CLAUDE_MODEL, max_tokens=300, system=system_prompt, tools=lang_tools, messages=messages,
         )
         if response.stop_reason == "tool_use" and on_tool_call is not None:
             try:
@@ -377,15 +376,12 @@ def ask(
                 if block.type == "tool_use"
             ]
             messages.append({"role": "user", "content": tool_results})
-            # Recompute system blocks in case a tool (like set_voice_mode or remember) updated the state
-            system_blocks = [
-                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
-            ]
+            # Recompute in case a tool (like set_voice_mode or remember) updated state
+            system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()
             response = _timed(
                 "claude",
                 client.messages.create,
-                model=CLAUDE_MODEL, max_tokens=300, system=system_blocks, tools=lang_tools_cached, messages=messages,
+                model=CLAUDE_MODEL, max_tokens=300, system=system_prompt, tools=lang_tools, messages=messages,
             )
 
         if response.stop_reason == "tool_use":
@@ -396,17 +392,14 @@ def ask(
             # read aloud verbatim once. Discard it and force one final,
             # tool-free turn on the same history so Claude commits to its
             # best answer from what it's already gathered.
-            system_blocks = [
-                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
-            ]
+            system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()
             response = _timed(
                 "claude_forced_final",
                 client.messages.create,
                 model=CLAUDE_MODEL,
                 max_tokens=300,
-                system=system_blocks,
-                tools=lang_tools_cached,
+                system=system_prompt,
+                tools=lang_tools,
                 tool_choice={"type": "none"},
                 messages=messages,
             )
