@@ -245,7 +245,13 @@ def play(query: str) -> str:
                     _run_applescript('tell application "Spotify" to play')
                     return "status: resumed"
                 return "status: error_no_active_device"
-            sp.start_playback(device_id=device_id)
+            try:
+                sp.start_playback(device_id=device_id)
+            except Exception:
+                if _local_spotify_running():
+                    _run_applescript('tell application "Spotify" to play')
+                    return "status: resumed"
+                raise
             return "status: resumed"
     except Exception as exc:
         raise SpotifyError(f"Spotify resume failed: {exc}") from exc
@@ -381,9 +387,11 @@ def skip_track(direction: str = "next") -> str:
         else:
             sp.previous_track(device_id=device_id)
         return "status: skipped"
-    except SpotifyError:
-        raise
     except Exception as exc:
+        if _local_spotify_running():
+            cmd = "next track" if direction == "next" else "previous track"
+            _run_applescript(f'tell application "Spotify" to {cmd}')
+            return "status: skipped"
         raise SpotifyError(f"Spotify skip track failed: {exc}") from exc
 
 
@@ -399,9 +407,10 @@ def stop() -> str:
                 return "status: stopped"
             return "status: error_no_active_device"
         sp.pause_playback(device_id=device_id)
-    except SpotifyError:
-        raise
     except Exception as exc:
+        if _local_spotify_running():
+            _run_applescript('tell application "Spotify" to pause')
+            return "status: stopped"
         err_msg = str(exc)
         if "Restriction violated" in err_msg or "already paused" in err_msg.lower():
             return "status: stopped"
@@ -437,6 +446,9 @@ def resume() -> str:
             return "There's no active Spotify device to resume."
         sp.start_playback(device_id=device_id)
     except Exception as exc:
+        if _local_spotify_running():
+            _run_applescript('tell application "Spotify" to play')
+            return "Resumed playback."
         raise SpotifyError(f"Couldn't resume Spotify: {exc}") from exc
     return "Resumed playback."
 
