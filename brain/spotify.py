@@ -235,7 +235,7 @@ def _get_recommendations(sp, track) -> list[str]:
 def play(query: str) -> str:
     """Search for `query` and start playing the top matching track (or play a URI directly).
     Returns a short status string for Claude to relay; raises SpotifyError on failure."""
-    is_resume = not query or query.strip().lower() in ("resume", "continue", "תמשיך", "להמשיך")
+    is_resume = not query or query.strip().lower() in ("resume", "continue", "תמשיך", "להמשיך", "play", "פליי", "נגן")
     sp = _get_client()
     try:
         if is_resume:
