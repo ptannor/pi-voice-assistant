@@ -42,6 +42,23 @@ def synthesize_reply(text: str) -> Path:
     return output_path
 
 
+def speak_reply_chunks(text: str) -> tuple[list[Path], float]:
+    """Synthesize reply to a single continuous wav file inside a list.
+
+    This prevents audio hardware clicks, pops, or static noise in the middle of
+    replies (like jokes) that occurs when opening/closing the audio stream
+    multiple times for separate sentence chunks, while keeping compatibility
+    with the daemon's chunk play loop.
+    """
+    text = (text or "").strip()
+    if not text:
+        return [], 0.0
+    t_start = time.monotonic()
+    wav = synthesize_reply(text)
+    t_first_audio = time.monotonic() - t_start
+    return [wav], t_first_audio
+
+
 def speak_reply(text: str, out_device: Device) -> float:
     """Synthesize and play `text` as a single continuous wav file.
 
@@ -52,10 +69,9 @@ def speak_reply(text: str, out_device: Device) -> float:
     text = (text or "").strip()
     if not text:
         return 0.0
-    t_start = time.monotonic()
-    wav = synthesize_reply(text)
-    t_first_audio = time.monotonic() - t_start
-    play_wav(wav, out_device)
-    wav.unlink(missing_ok=True)
+    chunks, t_first_audio = speak_reply_chunks(text)
+    for wav in chunks:
+        play_wav(wav, out_device)
+        wav.unlink(missing_ok=True)
     return t_first_audio
 
