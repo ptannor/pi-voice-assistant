@@ -51,7 +51,7 @@ def synthesize_to_wav(
             raise SynthesisError(f"Edge TTS synthesis failed: {exc}") from exc
 
         result = subprocess.run(
-            ["ffmpeg", "-y", "-i", str(mp3_path), "-ar", "16000", "-ac", "1", str(output_path)],
+            ["ffmpeg", "-y", "-i", str(mp3_path), "-codec:a", "pcm_s16le", "-ar", "16000", "-ac", "1", str(output_path)],
             capture_output=True,
             text=True,
         )
