@@ -206,6 +206,7 @@ def _play_wav_with_barge_in(
         samplerate=SAMPLE_RATE,
         dtype="int16",
         blocksize=CHUNK_SAMPLES,
+        latency='high',
         callback=callback,
     ):
         while time.monotonic() - start_time < duration:
