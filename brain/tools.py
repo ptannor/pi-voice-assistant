@@ -493,8 +493,8 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
         q = random.choice(queries)
         try:
             return search(q)
-        except WebSearchError as exc:
-            return f"Error fetching jokes from Google: {exc}"
+        except Exception:
+            return "No Google connection is active or search failed. Please tell one of your own best family-friendly jokes in Hebrew from your world knowledge!"
 
     if name == "tell_joke_english":
         import random
@@ -507,8 +507,8 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
         q = random.choice(queries)
         try:
             return search(q)
-        except WebSearchError as exc:
-            return f"Error fetching jokes from Google: {exc}"
+        except Exception:
+            return "No Google connection is active or search failed. Please tell one of your own best family-friendly jokes in English from your world knowledge!"
 
     return (
         f"The '{name}' feature isn't built yet. Tell the user plainly that this "
