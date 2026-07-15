@@ -6,10 +6,8 @@ answers in the wrong language despite the system prompt.
 """
 from __future__ import annotations
 
-import re
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from audio_check.devices import Device
@@ -29,13 +27,6 @@ _NORMAL_PITCH = {"he": "+0Hz", "en": "+0Hz"}
 _FUNNY_VOICES = {"he": "he-IL-HilaNeural", "en": "en-US-AnaNeural"}
 _FUNNY_PITCH = {"he": "+100Hz", "en": "+0Hz"}
 
-# Splits on ./!/? followed by whitespace, but not when it's flanked by digits
-# (guards against cutting "3.5" mid-decimal) or right after "a.m"/"p.m." --
-# confirmed false-positive: "It's playing at 9:30 p.m. tonight" split into
-# "...9:30 p.m." + "tonight", an awkward mid-thought cut. See speak_reply.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<![0-9])(?<![apAP]\.[mM])[.!?](?!\d)\s+")
-_MIN_FIRST_SENTENCE_CHARS = 8  # skip the overlap for a too-short leading fragment
-
 
 def synthesize_reply(text: str) -> Path:
     """Synthesize `text` to a temp WAV file and return its path.
@@ -51,55 +42,20 @@ def synthesize_reply(text: str) -> Path:
     return output_path
 
 
-def _split_first_sentence(text: str) -> tuple[str, str] | None:
-    """Return (first_sentence, rest) at the first real sentence boundary, or
-    None if there isn't one worth splitting on (single-sentence reply, or a
-    leading fragment too short to bother overlapping -- see speak_reply).
-    """
-    for match in _SENTENCE_SPLIT_RE.finditer(text):
-        first, rest = text[: match.end()].strip(), text[match.end() :].strip()
-        if len(first) >= _MIN_FIRST_SENTENCE_CHARS and rest:
-            return first, rest
-    return None
-
-
-def speak_reply_chunks(text: str) -> tuple[list[Path], float]:
-    """Synthesize reply and return a list of WAV files to play, and time-to-first-audio."""
-    text = (text or "").strip()
-    if not text:
-        return [], 0.0
-    t_start = time.monotonic()
-    split = _split_first_sentence(text)
-    if split is None:
-        wav = synthesize_reply(text)
-        return [wav], time.monotonic() - t_start
-
-    first, rest = split
-    first_wav = synthesize_reply(first)
-    t_first_audio = time.monotonic() - t_start
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        rest_future = pool.submit(synthesize_reply, rest)
-        rest_wav = rest_future.result()
-    return [first_wav, rest_wav], t_first_audio
-
-
 def speak_reply(text: str, out_device: Device) -> float:
-    """Synthesize and play `text`, returning time-to-first-audio in seconds.
+    """Synthesize and play `text` as a single continuous wav file.
 
-    For a multi-sentence reply, synthesizes and plays the first sentence
-    immediately, while the rest synthesizes concurrently in the background --
-    so the assistant starts talking without waiting for the full reply's TTS
-    to finish. A single-sentence reply (the common case, per this project's
-    system prompt keeping replies short) has no second chunk to overlap with,
-    so it falls back to a plain synthesize-then-play with no added
-    complexity.
+    This prevents audio hardware clicks, pops, or static noise in the middle of
+    replies (like jokes) that occurs when opening/closing the audio stream
+    multiple times for separate sentence chunks.
     """
     text = (text or "").strip()
     if not text:
         return 0.0
-    chunks, t_first_audio = speak_reply_chunks(text)
-    for wav in chunks:
-        play_wav(wav, out_device)
-        wav.unlink(missing_ok=True)
+    t_start = time.monotonic()
+    wav = synthesize_reply(text)
+    t_first_audio = time.monotonic() - t_start
+    play_wav(wav, out_device)
+    wav.unlink(missing_ok=True)
     return t_first_audio
 
