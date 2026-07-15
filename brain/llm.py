@@ -104,8 +104,7 @@ same as any other reply. You'll be told below whether funny voice mode is
 currently on -- that's the source of truth, not anything said earlier in
 this conversation.
 {_LOCATION_PROMPT_LINE}{_FAMILY_PROMPT_LINE}
-Always reply in the same language the user just spoke to you in: if they
-spoke English, reply in English; if they spoke Hebrew, reply in Hebrew.
+Always reply in the same language the user just spoke to you in: if they spoke English, reply in English; if they spoke Hebrew, reply in Hebrew. Under no circumstances should you reply in English when the user addresses you in Hebrew, even if the query is garbled, noisy, or you need to ask a clarification question.
 
 Use the available tools for anything they cover. Don't claim to have done
 something physical/real-world, or given specific factual info you don't
@@ -118,14 +117,33 @@ have the precise number, say plainly which part you know and which you
 don't (e.g. "it's playing today, but I don't have the exact time") instead
 of stating something specific-sounding that you're inferring or guessing.
 
-You will sometimes get a transcribed question with a garbled or
-unfamiliar-sounding name (speech-to-text mishears names it doesn't
-recognize, especially in Hebrew). If a search for that name turns up
-something with a very similar-sounding real name, treat that as very
-likely the same thing the user meant, rather than concluding they're two
-different things and inventing an explanation for the mismatch (e.g. don't
-assert that a garbled name refers to a different, unverified place/thing
-just because the spelling doesn't match exactly).
+You will sometimes get a transcribed query that contains a clear command mixed with side-conversations, background noises, or speech-to-text garbling (e.g. they say "לך 20 שנית אחורה... תגידי לי, את מבינה...").
+1. If a clear music control command (such as playing, seeking/skipping, or stopping music) is present in the query, prioritize executing that command immediately by calling the appropriate tool. Do not ask for clarification or mention the garbled text if a command is present.
+2. Speech-to-text sometimes mishears names (especially in Hebrew). If a search for a garbled name turns up a very similar-sounding real name, treat that as the intended target instead of assuming it's something different.
+
+When the user asks to play a song, podcast, show, or episode (e.g., using "תנגן", "תשמיע", "תשים פודקאסט", "play podcast", "play"):
+1. If the user's request appears to contain lyrics from a song (e.g., they ask for "the song that says [lyrics]"), first call the web_search tool to look up the song title and artist based on those lyrics.
+2. Correct any obvious spelling mistakes, typos, or speech-to-text garbling in the query. Call the search_music_hebrew (or search_music_english) tool with this query to get the top candidate tracks/episodes/shows from Spotify.
+3. Inspect the candidates (which contain name, artist, type ("track", "episode", or "show"), popularity score, and URI):
+   - Rely on popularity, relevance, and the household's musical taste / favorite artists (which might be noted in the household memories, e.g., Hanan Ben Ari, Kfir Tsafrir, Ishay Ribo, Billy Joel, Stilla, Ness, etc.) to identify the most likely match.
+   - If there is a single outstanding match, call play_music_hebrew (or play_music_english) immediately with that item's URI.
+   - If there are two or three prominent/equally likely candidates, stop and ask the user a very brief clarification question listing the 2 or 3 options using the minimum number of words possible (e.g., in Hebrew: "הפודקאסט של שיר אחד או של חיות כיס?").
+   - Once they clarify, call play_music_hebrew (or play_music_english) with the correct item's URI.
+Never ask for clarification if there is a clear winner; keep the flow fast and immediate. If a search fails or no matching songs/shows are found, explain this briefly in the user's language (e.g., in Hebrew, never in English). If a music playback tool returns "status: error_no_active_device", tell the user in Hebrew that they need to open Spotify on a device first before you can play music (e.g., "פתח בבקשה את ספוטיפיי במכשיר כלשהו תחילה").
+
+When the user asks to resume, resume playing, or continue playing paused music (e.g., using "תמשיך", "להמשיך", "resume", "continue", "play"), call play_music_hebrew (or play_music_english) with the query "resume" to continue the track from where it was paused.
+
+When the user asks to seek, skip, skip forward, skip backward, fast forward, or rewind in the current song (e.g., "דלג 30 שניות קדימה", "תחזיר דקה אחורה", "fast forward 20 seconds", "דלג קדימה"), determine the number of seconds to shift (use a positive number of seconds to skip forward, or a negative number to go backward) and call the seek_music_hebrew (or seek_music_english) tool.
+
+When the user asks to skip the entire song, skip this song, go to the next song/track, or go back to the previous song/track (e.g., "דלג לשיר הבא", "דלג על השיר", "השיר הבא", "תחזור לשיר הקודם", "הקודם", "skip track", "נקסט", "נקס", "סקייפ", "תעביר", "תעבירי"), determine the direction ("next" or "previous") and call the skip_track_hebrew (or skip_track_english) tool.
+
+If the user asks to stop, cancel, or pause the music or timer (e.g., using "עצור", "עצרי", "stop", "בטל את הטיימר"), call the appropriate tool, and reply with an empty text response (do not say "עצרתי" or any verbal confirmation).
+
+When the user asks to tell a joke (e.g., "ספר לי בדיחה", "tell a joke"), call the tell_joke_hebrew (or tell_joke_english) tool. Once you get the search results containing joke candidates:
+1. Review all candidates and strictly filter out any bad, dry, boring, overused, or low-quality jokes.
+2. Select only the absolute funniest, most clever, and family-friendly joke available.
+3. Phrase and deliver the joke with excellent comedic timing, using punctuation (like commas, ellipsis, question marks, and exclamation marks) to insert natural pauses so the voice neural engine speaks it in a fun, punchy way.
+4. Do NOT use any introductory or preamble phrases (e.g., do NOT say "בדיחה לך", "בדיחה בשבילך", "הנה בדיחה", "Here is a joke", "Here's a joke for you", etc.). Start telling the joke itself directly!
 
 When the user shares something worth remembering for future conversations --
 names, allergies, recurring preferences, house rules -- use the remember
@@ -161,6 +179,8 @@ For casual, playful, or rhetorical questions (small talk, "do you love me?",
 jokes, greetings), give ONE short, warm sentence back -- don't pivot into
 listing your features or capabilities unless they actually asked what you can
 do. Match the weight of your reply to the weight of the question.
+
+CRITICAL: If the user addresses you in Hebrew (e.g. they speak Hebrew or write in Hebrew script), you MUST respond, think, clarify, and formulate all text solely in Hebrew. Under no circumstances should you ever output any English sentences, explanations, or responses when addressed in Hebrew.
 """
 
 _MAX_TOOL_ROUNDS = 4  # safety cap against a runaway tool-call loop -- a real
@@ -254,6 +274,32 @@ def _funny_voice_prompt_line() -> str:
     )
 
 
+def _timer_prompt_line() -> str:
+    try:
+        from . import timer
+        if timer.is_timer_active():
+            return "\nThere is currently an active background countdown timer running.\n"
+    except Exception:
+        pass
+    return ""
+
+
+def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]]) -> str:
+    # Find if any tool was executed in this turn
+    tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
+    if not tool_stages:
+        return "לא הצלחתי למצוא תשובה ברורה לזה, סליחה." if language == "he" else "Sorry, I couldn't find a clear answer to that."
+    
+    # Get the last tool stage name
+    last_tool = tool_stages[-1].replace("tool:", "")
+    if "stop" in last_tool or "cancel" in last_tool or "play_music" in last_tool or "seek_music" in last_tool:
+        return ""
+    elif "set_timer" in last_tool:
+        return "הטיימר הוגדר." if language == "he" else "Timer set."
+    else:
+        return "בוצע." if language == "he" else "Done."
+
+
 def ask(
     user_text: str,
     language: str,
@@ -299,7 +345,7 @@ def ask(
     # ~1,500 tokens resent on every single call otherwise.
     system_blocks = [
         {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+        {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
     ]
 
     messages = (history or []) + [
@@ -334,7 +380,7 @@ def ask(
             # Recompute system blocks in case a tool (like set_voice_mode or remember) updated the state
             system_blocks = [
                 {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
             ]
             response = _timed(
                 "claude",
@@ -352,7 +398,7 @@ def ask(
             # best answer from what it's already gathered.
             system_blocks = [
                 {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line()},
+                {"type": "text", "text": _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()},
             ]
             response = _timed(
                 "claude_forced_final",
@@ -369,10 +415,36 @@ def ask(
 
     reply = "".join(block.text for block in response.content if block.type == "text").strip()
     if not reply:
-        # Confirmed possible (though rare) when tool_choice=none is forced
-        # above with little else to go on -- silence is worse than an
-        # explicit, honest "couldn't find it".
-        reply = "לא הצלחתי למצוא תשובה ברורה לזה, סליחה." if language == "he" else "Sorry, I couldn't find a clear answer to that."
+        reply = _get_empty_reply_fallback(language, timeline)
+
+    # Force silent replies for stop/cancel/play tools as requested by user ("you don't need to say עצרתי" or "בוצע")
+    tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
+    if tool_stages:
+        last_tool = tool_stages[-1].replace("tool:", "")
+        if "stop" in last_tool or "cancel" in last_tool:
+            reply = ""
+        elif "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool or "stop_music" in last_tool:
+            # If the playback tool successfully played, resumed, seeked, skipped, or stopped, force the response to be completely silent
+            is_silent_success = False
+            for msg in reversed(messages):
+                if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                    for content in msg["content"]:
+                        if content.get("type") == "tool_result":
+                            res_str = str(content.get("content"))
+                            if "status: playing" in res_str or "status: resumed" in res_str or "status: seeked" in res_str or "status: skipped" in res_str or "status: stopped" in res_str:
+                                is_silent_success = True
+                                break
+                if is_silent_success:
+                    break
+
+            if is_silent_success:
+                reply = ""
+            else:
+                clean_reply = reply.replace("!", "").replace(".", "").replace(",", "").strip().lower()
+                if (clean_reply in ("בוצע", "עצרתי", "done", "stopped", "resumed", "resuming", "music resumed", "ממשיך", "ממשיך לנגן") or
+                    any(w in clean_reply for w in ("seeked", "skipped", "דילגתי", "חזרתי", "לדלג"))):
+                    reply = ""
+
     reply = _strip_voice_unfriendly_formatting(reply)
     messages.append({"role": "assistant", "content": response.content})
     return reply, messages, timeline

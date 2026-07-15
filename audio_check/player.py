@@ -10,7 +10,28 @@ from .devices import Device
 from .errors import PlaybackFailed
 
 
-def _load_wav(filepath: Path) -> tuple[np.ndarray, int]:
+def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    if orig_sr == target_sr:
+        return audio
+    num_channels = audio.shape[1] if audio.ndim > 1 else 1
+    duration = len(audio) / orig_sr
+    num_target_samples = int(duration * target_sr)
+    
+    orig_x = np.arange(len(audio))
+    target_x = np.linspace(0, len(audio) - 1, num_target_samples)
+    
+    if audio.ndim > 1:
+        resampled_channels = []
+        for c in range(num_channels):
+            resampled_c = np.interp(target_x, orig_x, audio[:, c])
+            resampled_channels.append(resampled_c)
+        return np.column_stack(resampled_channels).astype(audio.dtype)
+    else:
+        resampled = np.interp(target_x, orig_x, audio)
+        return resampled.astype(audio.dtype)
+
+
+def _load_wav(filepath: Path, target_sr: int | None = None) -> tuple[np.ndarray, int]:
     if not filepath.exists():
         raise PlaybackFailed(f"No WAV file at {filepath}. Record one first.")
 
@@ -27,11 +48,21 @@ def _load_wav(filepath: Path) -> tuple[np.ndarray, int]:
     audio = np.frombuffer(raw, dtype=dtype)
     if channels > 1:
         audio = audio.reshape(-1, channels)
+    else:
+        # Convert mono (1 channel) to stereo (2 channels) to prevent static noise
+        # from low-quality driver-level mono-to-stereo emulation on DACs/speakers.
+        audio = np.column_stack((audio, audio))
+
+    if target_sr is not None and sample_rate != target_sr:
+        audio = resample_audio(audio, sample_rate, target_sr)
+        sample_rate = target_sr
+
     return audio, sample_rate
 
 
 def play_wav(filepath: Path, device: Device) -> None:
-    audio, sample_rate = _load_wav(filepath)
+    target_sr = int(device.default_samplerate)
+    audio, sample_rate = _load_wav(filepath, target_sr=target_sr)
     try:
         sd.play(audio, samplerate=sample_rate, device=device.index)
         sd.wait()
@@ -55,7 +86,8 @@ def play_wav_async(filepath: Path, device: Device) -> None:
     (e.g. "still working on it") that shouldn't add its own latency on top
     of whatever's happening concurrently, like a slow tool call in flight.
     """
-    audio, sample_rate = _load_wav(filepath)
+    target_sr = int(device.default_samplerate)
+    audio, sample_rate = _load_wav(filepath, target_sr=target_sr)
     try:
         sd.play(audio, samplerate=sample_rate, device=device.index)
     except sd.PortAudioError as exc:

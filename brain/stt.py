@@ -51,12 +51,13 @@ def _is_sound_effect_caption(text: str) -> bool:
 # "תודה" ("thank you") with no such word actually said.
 _HALLUCINATION_PHRASES = {
     "thank you", "thanks for watching", "thank you for watching", "bye", "you", "i'm sorry",
-    "תודה", "תודה רבה", "תודה שצפיתם",
+    "תודה", "תודה רבה", "תודה שצפיתם", "beep", "beep beep", "beep beep beep",
 }
 
 
 def _is_likely_hallucination(text: str) -> bool:
-    return text.strip().lower().rstrip(".!") in _HALLUCINATION_PHRASES
+    clean = text.replace(".", "").replace("!", "").replace(",", "").strip().lower()
+    return clean in _HALLUCINATION_PHRASES
 
 
 def _transcribe_forced(client: Groq, wav_path: Path, language: str) -> tuple[str, float]:
@@ -116,9 +117,19 @@ def transcribe(wav_path: Path, forced_language: str | None = None) -> tuple[str,
                 future_he = pool.submit(_transcribe_forced, client, wav_path, "he")
                 text_en, confidence_en = future_en.result()
                 text_he, confidence_he = future_he.result()
-            text, language = (text_he, "he") if confidence_he >= confidence_en else (text_en, "en")
+            text, language = (text_he, "he") if confidence_he >= (confidence_en - 0.15) else (text_en, "en")
     except Exception as exc:
         raise TranscriptionError(f"Groq transcription failed: {exc}") from exc
+
+    # Defensive phonetic correction: classic Whisper English mishearings of the Hebrew command "עצור" (stop)
+    clean_text = text.replace("!", "").replace(".", "").replace(",", "").strip().lower()
+    if clean_text in (
+        "it's so", "its so", "it is so", "so",
+        "what's so", "whats so", "what so", "but so",
+        "also", "all so", "how so", "how's so", "that's so", "thats so"
+    ):
+        text = "עצור"
+        language = "he"
 
     # Defensive final check: trust an unambiguous Hebrew script even if the
     # English-forced attempt somehow scored higher confidence (or was forced).

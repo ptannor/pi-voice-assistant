@@ -132,6 +132,7 @@ def record_until_silence(
         samplerate=sample_rate,
         dtype="int16",
         blocksize=CHUNK_SAMPLES,
+        latency='high',
         callback=callback,
     ):
         while elapsed < max_seconds:

@@ -43,7 +43,7 @@ TOOLS = [
     },
     {
         "name": "cancel_timer_hebrew",
-        "description": "Cancel a running countdown timer.",
+        "description": "Cancel a running countdown timer or stop any playing alarm music.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -68,13 +68,27 @@ TOOLS = [
     # Music / volume
     {
         "name": "play_music_hebrew",
-        "description": "Play a song, artist, or genre of music using Hebrew search query on Spotify.",
+        "description": "Play a song, artist, or genre of music on Spotify. To resume or continue paused music, pass 'resume' as the query.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to play, e.g. a song title, artist, or genre in Hebrew.",
+                    "description": "The song query, direct URI, or 'resume' to continue playback.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_music_hebrew",
+        "description": "Search Spotify for a song and return a list of top candidate tracks with names, artists, popularity (0-100), and track URIs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The song query to search.",
                 }
             },
             "required": ["query"],
@@ -87,13 +101,27 @@ TOOLS = [
     },
     {
         "name": "play_music_english",
-        "description": "Play a song, artist, or genre of music using English search query on Spotify.",
+        "description": "Play a song, artist, or genre of music on Spotify. To resume or continue paused music, pass 'resume' as the query.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to play, e.g. a song title, artist, or genre in English.",
+                    "description": "The song query, direct URI, or 'resume' to continue playback.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_music_english",
+        "description": "Search Spotify for a song and return a list of top candidate tracks with names, artists, popularity (0-100), and track URIs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The song query to search.",
                 }
             },
             "required": ["query"],
@@ -282,6 +310,64 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "seek_music_hebrew",
+        "description": "Seek forward or backward in the currently playing song on Spotify by a number of seconds. Positive values skip forward, negative values skip backward.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "integer",
+                    "description": "The number of seconds to seek. Positive to go forward, negative to go backward (e.g. 30, -60).",
+                }
+            },
+            "required": ["seconds"],
+        },
+    },
+    {
+        "name": "seek_music_english",
+        "description": "Seek forward or backward in the currently playing song on Spotify by a number of seconds. Positive values skip forward, negative values skip backward.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "integer",
+                    "description": "The number of seconds to seek. Positive to go forward, negative to go backward (e.g. 30, -60).",
+                }
+            },
+            "required": ["seconds"],
+        },
+    },
+    {
+        "name": "skip_track_hebrew",
+        "description": "Skip the current song and play the next song, or go back to play the previous song on Spotify.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["next", "previous"],
+                    "description": "The direction to skip. Use 'next' to go to the next song, and 'previous' to go to the previous song. Default is 'next'.",
+                }
+            },
+            "required": ["direction"],
+        },
+    },
+    {
+        "name": "skip_track_english",
+        "description": "Skip the current song and play the next song, or go back to play the previous song on Spotify.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["next", "previous"],
+                    "description": "The direction to skip. Use 'next' to go to the next song, and 'previous' to go to the previous song. Default is 'next'.",
+                }
+            },
+            "required": ["direction"],
+        },
+    },
 ]
 
 # Tools not listed here default to both languages.
@@ -290,11 +376,17 @@ TOOL_LANGUAGES: dict[str, list[str]] = {
     "ask_mishna_question": ["he"],
     "tell_joke_english": ["en"],
     "tell_joke_hebrew": ["he"],
+    "seek_music_hebrew": ["he"],
+    "seek_music_english": ["en"],
+    "skip_track_hebrew": ["he"],
+    "skip_track_english": ["en"],
     # Music playback is split by language: Hebrew tools are Hebrew-only,
     # English tools are English-only.
     "play_music_hebrew": ["he"],
+    "search_music_hebrew": ["he"],
     "stop_music_hebrew": ["he"],
     "play_music_english": ["en"],
+    "search_music_english": ["en"],
     "stop_music_english": ["en"],
     # Timers are also split by language.
     "set_timer_hebrew": ["he"],
@@ -353,23 +445,70 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
     if name == "search_household_info":
         return memory.search_household_info(tool_input["query"])
 
-    if name == "play_music_hebrew":
+    if name in ("play_music_hebrew", "play_music_english"):
         try:
             return spotify.play(tool_input["query"])
         except spotify.SpotifyError as exc:
-            return f"Couldn't play the music ({exc}). Tell the user you couldn't play it right now."
+            return f"status: error_playback_failed, details: {exc}"
 
-    if name == "stop_music_hebrew":
+    if name in ("search_music_hebrew", "search_music_english"):
+        try:
+            return spotify.search_track(tool_input["query"])
+        except spotify.SpotifyError as exc:
+            return f"status: error_search_failed, details: {exc}"
+
+    if name in ("seek_music_hebrew", "seek_music_english"):
+        try:
+            return spotify.seek(tool_input["seconds"])
+        except spotify.SpotifyError as exc:
+            return f"status: error_seek_failed, details: {exc}"
+
+    if name in ("skip_track_hebrew", "skip_track_english"):
+        try:
+            return spotify.skip_track(tool_input.get("direction", "next"))
+        except spotify.SpotifyError as exc:
+            return f"status: error_skip_failed, details: {exc}"
+
+    if name in ("stop_music_hebrew", "stop_music_english"):
         try:
             return spotify.stop()
         except spotify.SpotifyError as exc:
-            return f"Couldn't stop the music ({exc}). Tell the user you couldn't stop it right now."
+            return f"status: error_stop_failed, details: {exc}"
 
     if name == "set_timer_hebrew":
         return timer.set_timer(tool_input["duration_seconds"])
 
     if name == "cancel_timer_hebrew":
         return timer.cancel_timer()
+
+    if name == "tell_joke_hebrew":
+        import random
+        queries = [
+            "בדיחה קצרה מצחיקה לילדים",
+            "בדיחות קצרות ומצחיקות",
+            "בדיחה מצחיקה רצח",
+            "בדיחה קורעת מצחיקה",
+            "בדיחות קרש מצחיקות לילדים"
+        ]
+        q = random.choice(queries)
+        try:
+            return search(q)
+        except Exception:
+            return "No Google connection is active or search failed. Please tell one of your own best family-friendly jokes in Hebrew from your world knowledge!"
+
+    if name == "tell_joke_english":
+        import random
+        queries = [
+            "funny short dad joke family friendly",
+            "clean hilarious short joke",
+            "funny one liner jokes kids",
+            "silly family friendly joke of the day"
+        ]
+        q = random.choice(queries)
+        try:
+            return search(q)
+        except Exception:
+            return "No Google connection is active or search failed. Please tell one of your own best family-friendly jokes in English from your world knowledge!"
 
     return (
         f"The '{name}' feature isn't built yet. Tell the user plainly that this "

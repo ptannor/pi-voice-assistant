@@ -19,7 +19,10 @@ tool stubs stay cheap to import.
 """
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from .config import SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, SPOTIPY_REDIRECT_URI
@@ -89,6 +92,25 @@ def _get_client():
     return _client
 
 
+def _run_applescript(script: str) -> str | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _local_spotify_running() -> bool:
+    if sys.platform != "darwin":
+        return False
+    res = _run_applescript('application "Spotify" is running')
+    return res == "true"
+
+
 def _active_device_id(sp) -> str | None:
     """Prefer the currently-active device; fall back to any available one."""
     devices = sp.devices().get("devices", [])
@@ -112,16 +134,42 @@ def _clean_hebrew_query(query: str) -> str:
         "נגן את",
         "תשמיע את",
         "תנגן את",
+        "play the song",
+        "play song",
+        "play the podcast",
+        "play podcast",
+        "play the episode",
+        "play episode",
+        "on spotify",
+        "spotify",
         "בספוטיפיי",
         "ספוטיפיי",
+        "הפודקאסטים",
+        "פודקאסטים",
+        "הפודקאסט",
+        "פודקאסט",
+        "הפודקסט",
+        "פודקסט",
+        "podcast",
+        "הפרקים",
+        "פרקים",
+        "הפרק",
+        "פרק",
+        "episode",
+        "התוכנית",
+        "תוכנית",
+        "התכנית",
+        "תכנית",
         "השיר",
         "שיר",
+        "song",
         "נגן",
         "נגני",
         "תשמיע",
         "תשמיעי",
         "תנגן",
         "תנגני",
+        "play",
         "את",
         "לי",
         "ישמור",
@@ -133,44 +181,218 @@ def _clean_hebrew_query(query: str) -> str:
     return " ".join(query.split())
 
 
+def _get_recommendations(sp, track) -> list[str]:
+    """Generates a list of track URIs of the same style/artist to play after the target track."""
+    import random
+    uris = []
+    try:
+        artists = track.get("artists", [])
+        if not artists:
+            return uris
+        
+        primary_artist = artists[0]["name"]
+        
+        # 1. Fetch top tracks by the same artist (up to 8 tracks)
+        results = sp.search(q=f'artist:"{primary_artist}"', type="track", limit=10)
+        items = results.get("tracks", {}).get("items", [])
+        for item in items:
+            uri = item.get("uri")
+            if uri and uri != track["uri"] and uri not in uris:
+                uris.append(uri)
+                
+        # 2. Add some variety by mixing in top tracks from similar/compatible artists
+        is_hebrew = any('\u0590' <= c <= '\u05fe' for c in primary_artist)
+        if is_hebrew:
+            # Popular Hebrew artists list
+            hebrew_artists = ["חנן בן ארי", "ישי ריבו", "עומר אדם", "עדן חסון", "אושר כהן", "טונה", "רביד פלוטניק", "בניה ברבי"]
+            compat = [a for a in hebrew_artists if a.lower() != primary_artist.lower()]
+            if compat:
+                selected_artists = random.sample(compat, min(2, len(compat)))
+                for artist in selected_artists:
+                    res = sp.search(q=f'artist:"{artist}"', type="track", limit=3)
+                    for item in res.get("tracks", {}).get("items", []):
+                        uri = item.get("uri")
+                        if uri and uri != track["uri"] and uri not in uris:
+                            uris.append(uri)
+        else:
+            # Popular English artists list
+            english_artists = ["Billy Joel", "Elton John", "Coldplay", "Ed Sheeran", "Adele", "OneRepublic", "Queen"]
+            compat = [a for a in english_artists if a.lower() != primary_artist.lower()]
+            if compat:
+                selected_artists = random.sample(compat, min(2, len(compat)))
+                for artist in selected_artists:
+                    res = sp.search(q=f'artist:"{artist}"', type="track", limit=3)
+                    for item in res.get("tracks", {}).get("items", []):
+                        uri = item.get("uri")
+                        if uri and uri != track["uri"] and uri not in uris:
+                            uris.append(uri)
+    except Exception as exc:
+        print(f"Failed to generate recommendations: {exc}", file=sys.stderr)
+        
+    return uris[:15]
+
+
 def play(query: str) -> str:
     """Search for `query` and start playing the top matching track (or play a URI directly).
     Returns a short status string for Claude to relay; raises SpotifyError on failure."""
-    query = (query or "").strip()
-    if not query:
-        return "No song was specified to play."
-
+    is_resume = not query or query.strip().lower() in ("resume", "continue", "תמשיך", "להמשיך", "play", "פליי", "נגן")
     sp = _get_client()
     try:
-        if query.startswith("spotify:track:"):
-            # Fetch track details directly from the URI
-            track_id = query.split(":")[-1]
-            track = sp.track(track_id)
+        if is_resume:
+            device_id = _active_device_id(sp)
+            if device_id is None:
+                if _local_spotify_running():
+                    _run_applescript('tell application "Spotify" to play')
+                    return "status: resumed"
+                return "status: error_no_active_device"
+            try:
+                sp.start_playback(device_id=device_id)
+            except Exception:
+                if _local_spotify_running():
+                    _run_applescript('tell application "Spotify" to play')
+                    return "status: resumed"
+                raise
+            return "status: resumed"
+    except Exception as exc:
+        raise SpotifyError(f"Spotify resume failed: {exc}") from exc
+
+    try:
+        # Check if the query is a URI
+        if query.startswith("spotify:"):
+            uri = query
+            if uri.startswith("spotify:track:"):
+                track_id = uri.split(":")[-1]
+                track = sp.track(track_id)
+                name = track["name"]
+                artists = ", ".join(a["name"] for a in track.get("artists", []))
+            elif uri.startswith("spotify:episode:"):
+                episode_id = uri.split(":")[-1]
+                episode = sp.episode(episode_id)
+                name = episode["name"]
+                artists = episode.get("show", {}).get("name", "Podcast")
+            elif uri.startswith("spotify:show:"):
+                show_id = uri.split(":")[-1]
+                show = sp.show(show_id)
+                name = show["name"]
+                artists = show.get("publisher", "Podcast")
+            else:
+                name = "Spotify item"
+                artists = ""
         else:
+            # Clean and search
             cleaned_query = _clean_hebrew_query(query)
-            # If cleaning leaves nothing, fall back to the original query
             search_query = cleaned_query if cleaned_query else query
-            results = sp.search(q=search_query, type="track", limit=5)
-            items = results.get("tracks", {}).get("items", [])
-            if not items:
-                return f"Couldn't find anything on Spotify for '{search_query}'."
-            track = items[0]
+            
+            is_podcast_intent = any(w in query.lower() for w in ("פודקאסט", "פודקסט", "podcast", "פרק", "episode", "תוכנית", "תכנית"))
+            if is_podcast_intent:
+                # Search for episodes and shows
+                results = sp.search(q=search_query, type="episode,show", limit=5)
+                episodes = results.get("episodes", {}).get("items", [])
+                shows = results.get("shows", {}).get("items", [])
+                if episodes:
+                    item = episodes[0]
+                    uri = item["uri"]
+                    name = item["name"]
+                    artists = item.get("show", {}).get("name", "Podcast")
+                elif shows:
+                    item = shows[0]
+                    uri = item["uri"]
+                    name = item["name"]
+                    artists = item.get("publisher", "Podcast")
+                else:
+                    return f"status: error_not_found, query: {search_query}"
+            else:
+                # Default track search
+                results = sp.search(q=search_query, type="track", limit=5)
+                items = results.get("tracks", {}).get("items", [])
+                if not items:
+                    return f"status: error_not_found, query: {search_query}"
+                track = items[0]
+                uri = track["uri"]
+                name = track["name"]
+                artists = ", ".join(a["name"] for a in track.get("artists", []))
 
         device_id = _active_device_id(sp)
         if device_id is None:
-            return (
-                "Found the song, but there's no Spotify device to play on right "
-                "now. Open Spotify on a phone or computer (or start the Pi's "
-                "Spotify player) on the same account, then ask again."
-            )
-        sp.start_playback(device_id=device_id, uris=[track["uri"]])
+            if _local_spotify_running():
+                _run_applescript(f'tell application "Spotify" to play track "{uri}"')
+                return f"status: playing, track: {name}, artist: {artists}"
+            return "status: error_no_active_device"
+        
+        if uri.startswith("spotify:track:"):
+            rec_uris = _get_recommendations(sp, track)
+            sp.start_playback(device_id=device_id, uris=[uri] + rec_uris)
+        elif uri.startswith("spotify:episode:"):
+            sp.start_playback(device_id=device_id, uris=[uri])
+        elif uri.startswith("spotify:show:") or uri.startswith("spotify:playlist:") or uri.startswith("spotify:album:"):
+            sp.start_playback(device_id=device_id, context_uri=uri)
+        else:
+            sp.start_playback(device_id=device_id, uris=[uri])
+            
     except SpotifyError:
         raise
     except Exception as exc:
         raise SpotifyError(f"Spotify playback failed: {exc}") from exc
 
-    artists = ", ".join(a["name"] for a in track.get("artists", []))
-    return f"Now playing '{track['name']}'" + (f" by {artists}." if artists else ".")
+    return f"status: playing, track: {name}, artist: {artists}"
+
+
+def seek(seconds: int) -> str:
+    """Seek forward (positive seconds) or backward (negative seconds) in the current track.
+    Returns a status string; raises SpotifyError on failure."""
+    sp = _get_client()
+    try:
+        device_id = _active_device_id(sp)
+        if device_id is None:
+            if _local_spotify_running():
+                curr_pos_str = _run_applescript('tell application "Spotify" to get player position')
+                try:
+                    curr_pos = float(curr_pos_str)
+                except ValueError:
+                    curr_pos = 0.0
+                new_pos = max(0.0, curr_pos + seconds)
+                _run_applescript(f'tell application "Spotify" to set player position to {new_pos}')
+                return "status: seeked"
+            return "status: error_no_active_device"
+
+        playback = sp.current_playback()
+        if not playback or not playback.get("item"):
+            return "status: error_not_playing"
+
+        curr_progress_ms = playback.get("progress_ms", 0)
+        new_progress_ms = max(0, curr_progress_ms + (seconds * 1000))
+        sp.seek_track(position_ms=new_progress_ms, device_id=device_id)
+        return "status: seeked"
+    except SpotifyError:
+        raise
+    except Exception as exc:
+        raise SpotifyError(f"Spotify seek failed: {exc}") from exc
+
+
+def skip_track(direction: str = "next") -> str:
+    """Skip to the next or previous track. direction can be 'next' or 'previous'.
+    Returns a status string; raises SpotifyError on failure."""
+    sp = _get_client()
+    try:
+        device_id = _active_device_id(sp)
+        if device_id is None:
+            if _local_spotify_running():
+                cmd = "next track" if direction == "next" else "previous track"
+                _run_applescript(f'tell application "Spotify" to {cmd}')
+                return "status: skipped"
+            return "status: error_no_active_device"
+
+        if direction == "next":
+            sp.next_track(device_id=device_id)
+        else:
+            sp.previous_track(device_id=device_id)
+        return "status: skipped"
+    except Exception as exc:
+        if _local_spotify_running():
+            cmd = "next track" if direction == "next" else "previous track"
+            _run_applescript(f'tell application "Spotify" to {cmd}')
+            return "status: skipped"
+        raise SpotifyError(f"Spotify skip track failed: {exc}") from exc
 
 
 def stop() -> str:
@@ -180,16 +402,20 @@ def stop() -> str:
     try:
         device_id = _active_device_id(sp)
         if device_id is None:
-            return "There's no active Spotify device to stop."
+            if _local_spotify_running():
+                _run_applescript('tell application "Spotify" to pause')
+                return "status: stopped"
+            return "status: error_no_active_device"
         sp.pause_playback(device_id=device_id)
-    except SpotifyError:
-        raise
     except Exception as exc:
+        if _local_spotify_running():
+            _run_applescript('tell application "Spotify" to pause')
+            return "status: stopped"
         err_msg = str(exc)
         if "Restriction violated" in err_msg or "already paused" in err_msg.lower():
-            return "Stopped the music (already paused)."
+            return "status: stopped"
         raise SpotifyError(f"Couldn't stop Spotify: {exc}") from exc
-    return "Stopped the music."
+    return "status: stopped"
 
 
 def is_playing() -> bool:
@@ -197,7 +423,12 @@ def is_playing() -> bool:
     try:
         sp = _get_client()
         playback = sp.current_playback()
-        return playback is not None and playback.get("is_playing", False)
+        if playback is not None:
+            return playback.get("is_playing", False)
+        if _local_spotify_running():
+            state = _run_applescript('tell application "Spotify" to player state')
+            return state == "playing"
+        return False
     except Exception:
         return False
 
@@ -209,12 +440,80 @@ def resume() -> str:
     try:
         device_id = _active_device_id(sp)
         if device_id is None:
+            if _local_spotify_running():
+                _run_applescript('tell application "Spotify" to play')
+                return "Resumed playback."
             return "There's no active Spotify device to resume."
         sp.start_playback(device_id=device_id)
     except Exception as exc:
+        if _local_spotify_running():
+            _run_applescript('tell application "Spotify" to play')
+            return "Resumed playback."
         raise SpotifyError(f"Couldn't resume Spotify: {exc}") from exc
     return "Resumed playback."
 
+
+def search_track(query: str) -> str:
+    """Search for `query` and return top 3 matching tracks in a language-neutral format."""
+    query = (query or "").strip()
+    if not query:
+        return "status: error_no_query"
+
+    sp = _get_client()
+    try:
+        cleaned_query = _clean_hebrew_query(query)
+        search_query = cleaned_query if cleaned_query else query
+        results = sp.search(q=search_query, type="track,episode,show", limit=5)
+        
+        candidates = []
+        
+        # 1. Tracks
+        tracks = results.get("tracks", {}).get("items", [])
+        for item in tracks[:3]:
+            artists = ", ".join(a["name"] for a in item.get("artists", []))
+            candidates.append({
+                "name": item["name"],
+                "artist": artists,
+                "type": "track",
+                "popularity": item.get("popularity", 0),
+                "uri": item["uri"]
+            })
+            
+        # 2. Episodes
+        episodes = results.get("episodes", {}).get("items", [])
+        for item in episodes[:3]:
+            show_name = item.get("show", {}).get("name", "Unknown Show")
+            candidates.append({
+                "name": item["name"],
+                "artist": show_name,
+                "type": "episode",
+                "popularity": 0,
+                "uri": item["uri"]
+            })
+
+        # 3. Shows
+        shows = results.get("shows", {}).get("items", [])
+        for item in shows[:3]:
+            publisher = item.get("publisher", "Unknown Publisher")
+            candidates.append({
+                "name": item["name"],
+                "artist": publisher,
+                "type": "show",
+                "popularity": 0,
+                "uri": item["uri"]
+            })
+            
+        # Prioritize episodes/shows if query has podcast intent
+        is_podcast_intent = any(w in query.lower() for w in ("פודקאסט", "פודקסט", "podcast", "פרק", "episode", "תוכנית", "תכנית"))
+        if is_podcast_intent:
+            candidates.sort(key=lambda c: 0 if c["type"] in ("episode", "show") else 1)
+            
+        if not candidates:
+            return "status: empty_results"
+            
+        return json.dumps(candidates[:3], ensure_ascii=False)
+    except Exception as exc:
+        return f"status: error_search_failed, details: {exc}"
 
 
 if __name__ == "__main__":
