@@ -278,7 +278,7 @@ def seek(seconds: int) -> str:
             return "status: error_no_active_device"
 
         playback = sp.current_playback()
-        if not playback or not playback.get("is_playing"):
+        if not playback or not playback.get("item"):
             return "status: error_not_playing"
 
         curr_progress_ms = playback.get("progress_ms", 0)
