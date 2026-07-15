@@ -259,6 +259,38 @@ def play(query: str) -> str:
     return f"status: playing, track: {track['name']}, artist: {artists}"
 
 
+def seek(seconds: int) -> str:
+    """Seek forward (positive seconds) or backward (negative seconds) in the current track.
+    Returns a status string; raises SpotifyError on failure."""
+    sp = _get_client()
+    try:
+        device_id = _active_device_id(sp)
+        if device_id is None:
+            if _local_spotify_running():
+                curr_pos_str = _run_applescript('tell application "Spotify" to get player position')
+                try:
+                    curr_pos = float(curr_pos_str)
+                except ValueError:
+                    curr_pos = 0.0
+                new_pos = max(0.0, curr_pos + seconds)
+                _run_applescript(f'tell application "Spotify" to set player position to {new_pos}')
+                return "status: seeked"
+            return "status: error_no_active_device"
+
+        playback = sp.current_playback()
+        if not playback or not playback.get("is_playing"):
+            return "status: error_not_playing"
+
+        curr_progress_ms = playback.get("progress_ms", 0)
+        new_progress_ms = max(0, curr_progress_ms + (seconds * 1000))
+        sp.seek_track(position_ms=new_progress_ms, device_id=device_id)
+        return "status: seeked"
+    except SpotifyError:
+        raise
+    except Exception as exc:
+        raise SpotifyError(f"Spotify seek failed: {exc}") from exc
+
+
 def stop() -> str:
     """Pause playback on the active device. Returns a short status string;
     raises SpotifyError on failure."""

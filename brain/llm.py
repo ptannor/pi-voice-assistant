@@ -139,6 +139,8 @@ Never ask for clarification if there is a clear winner; keep the flow fast and i
 
 When the user asks to resume, resume playing, or continue playing paused music (e.g., using "תמשיך", "להמשיך", "resume", "continue", "play"), call play_music_hebrew (or play_music_english) with the query "resume" to continue the track from where it was paused.
 
+When the user asks to seek, skip, skip forward, skip backward, fast forward, or rewind in the current song (e.g., "דלג 30 שניות קדימה", "תחזיר דקה אחורה", "fast forward 20 seconds", "דלג קדימה"), determine the number of seconds to shift (use a positive number of seconds to skip forward, or a negative number to go backward) and call the seek_music_hebrew (or seek_music_english) tool.
+
 If the user asks to stop, cancel, or pause the music or timer (e.g., using "עצור", "עצרי", "stop", "בטל את הטיימר"), call the appropriate tool, and reply with an empty text response (do not say "עצרתי" or any verbal confirmation).
 
 When the user shares something worth remembering for future conversations --
@@ -286,7 +288,7 @@ def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]]) 
     
     # Get the last tool stage name
     last_tool = tool_stages[-1].replace("tool:", "")
-    if "stop" in last_tool or "cancel" in last_tool or "play_music" in last_tool:
+    if "stop" in last_tool or "cancel" in last_tool or "play_music" in last_tool or "seek_music" in last_tool:
         return ""
     elif "set_timer" in last_tool:
         return "הטיימר הוגדר." if language == "he" else "Timer set."
@@ -417,23 +419,26 @@ def ask(
         last_tool = tool_stages[-1].replace("tool:", "")
         if "stop" in last_tool or "cancel" in last_tool:
             reply = ""
-        elif "play_music" in last_tool:
-            # If the playback tool successfully resumed, force the response to be completely silent
-            is_resumed_success = False
+        elif "play_music" in last_tool or "seek_music" in last_tool:
+            # If the playback tool successfully resumed or seeked, force the response to be completely silent
+            is_silent_success = False
             for msg in reversed(messages):
                 if msg.get("role") == "user" and isinstance(msg.get("content"), list):
                     for content in msg["content"]:
-                        if content.get("type") == "tool_result" and "status: resumed" in str(content.get("content")):
-                            is_resumed_success = True
-                            break
-                if is_resumed_success:
+                        if content.get("type") == "tool_result":
+                            res_str = str(content.get("content"))
+                            if "status: resumed" in res_str or "status: seeked" in res_str:
+                                is_silent_success = True
+                                break
+                if is_silent_success:
                     break
 
-            if is_resumed_success:
+            if is_silent_success:
                 reply = ""
             else:
-                clean_reply = reply.replace("!", "").replace(".", "").strip().lower()
-                if clean_reply in ("בוצע", "עצרתי", "done", "stopped", "resumed", "resuming", "music resumed", "ממשיך", "ממשיך לנגן"):
+                clean_reply = reply.replace("!", "").replace(".", "").replace(",", "").strip().lower()
+                if (clean_reply in ("בוצע", "עצרתי", "done", "stopped", "resumed", "resuming", "music resumed", "ממשיך", "ממשיך לנגן") or
+                    any(w in clean_reply for w in ("seeked", "skipped", "דילגתי", "חזרתי", "לדלג"))):
                     reply = ""
 
     reply = _strip_voice_unfriendly_formatting(reply)

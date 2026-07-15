@@ -310,6 +310,34 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "seek_music_hebrew",
+        "description": "Seek forward or backward in the currently playing song on Spotify by a number of seconds. Positive values skip forward, negative values skip backward.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "integer",
+                    "description": "The number of seconds to seek. Positive to go forward, negative to go backward (e.g. 30, -60).",
+                }
+            },
+            "required": ["seconds"],
+        },
+    },
+    {
+        "name": "seek_music_english",
+        "description": "Seek forward or backward in the currently playing song on Spotify by a number of seconds. Positive values skip forward, negative values skip backward.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "integer",
+                    "description": "The number of seconds to seek. Positive to go forward, negative to go backward (e.g. 30, -60).",
+                }
+            },
+            "required": ["seconds"],
+        },
+    },
 ]
 
 # Tools not listed here default to both languages.
@@ -318,6 +346,8 @@ TOOL_LANGUAGES: dict[str, list[str]] = {
     "ask_mishna_question": ["he"],
     "tell_joke_english": ["en"],
     "tell_joke_hebrew": ["he"],
+    "seek_music_hebrew": ["he"],
+    "seek_music_english": ["en"],
     # Music playback is split by language: Hebrew tools are Hebrew-only,
     # English tools are English-only.
     "play_music_hebrew": ["he"],
@@ -394,6 +424,12 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
             return spotify.search_track(tool_input["query"])
         except spotify.SpotifyError as exc:
             return f"status: error_search_failed, details: {exc}"
+
+    if name in ("seek_music_hebrew", "seek_music_english"):
+        try:
+            return spotify.seek(tool_input["seconds"])
+        except spotify.SpotifyError as exc:
+            return f"status: error_seek_failed, details: {exc}"
 
     if name in ("stop_music_hebrew", "stop_music_english"):
         try:
