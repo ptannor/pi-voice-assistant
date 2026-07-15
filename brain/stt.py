@@ -116,7 +116,7 @@ def transcribe(wav_path: Path, forced_language: str | None = None) -> tuple[str,
                 future_he = pool.submit(_transcribe_forced, client, wav_path, "he")
                 text_en, confidence_en = future_en.result()
                 text_he, confidence_he = future_he.result()
-            text, language = (text_he, "he") if confidence_he >= confidence_en else (text_en, "en")
+            text, language = (text_he, "he") if confidence_he >= (confidence_en - 0.15) else (text_en, "en")
     except Exception as exc:
         raise TranscriptionError(f"Groq transcription failed: {exc}") from exc
 
