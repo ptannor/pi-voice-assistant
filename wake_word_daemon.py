@@ -85,7 +85,7 @@ ACK_DURATION_SECONDS = _wav_duration_seconds(ACK_WAV)
 WAKE_WORD = "alexa"  # pretrained fallback -- see _load_wake_word_model below
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
-DETECTION_THRESHOLD = 0.45  # Lowered from 0.6 to make triggering Alexa easier over background noise and music
+DETECTION_THRESHOLD = 0.6  # Default threshold when music is not playing, to prevent false triggers
 COOLDOWN_SECONDS = 2.0  # ignore re-triggers right as we resume listening
 # How long to wait for the user to start talking before giving up.
 INITIAL_QUERY_TIMEOUT = 4.0
