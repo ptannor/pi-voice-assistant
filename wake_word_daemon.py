@@ -158,6 +158,7 @@ def _listen_for_wake_word(model: Model, wake_word_key: str, in_device: Device, l
         samplerate=SAMPLE_RATE,
         dtype="int16",
         blocksize=CHUNK_SAMPLES,
+        latency='high',
         callback=callback,
     ):
         while True:
