@@ -136,6 +136,13 @@ def _clean_hebrew_query(query: str) -> str:
         "תנגן את",
         "בספוטיפיי",
         "ספוטיפיי",
+        "פודקאסט",
+        "פודקסט",
+        "podcast",
+        "פרק",
+        "episode",
+        "תוכנית",
+        "תכנית",
         "השיר",
         "שיר",
         "נגן",
@@ -225,38 +232,84 @@ def play(query: str) -> str:
         raise SpotifyError(f"Spotify resume failed: {exc}") from exc
 
     try:
-        if query.startswith("spotify:track:"):
-            # Fetch track details directly from the URI
-            track_id = query.split(":")[-1]
-            track = sp.track(track_id)
+        # Check if the query is a URI
+        if query.startswith("spotify:"):
+            uri = query
+            if uri.startswith("spotify:track:"):
+                track_id = uri.split(":")[-1]
+                track = sp.track(track_id)
+                name = track["name"]
+                artists = ", ".join(a["name"] for a in track.get("artists", []))
+            elif uri.startswith("spotify:episode:"):
+                episode_id = uri.split(":")[-1]
+                episode = sp.episode(episode_id)
+                name = episode["name"]
+                artists = episode.get("show", {}).get("name", "Podcast")
+            elif uri.startswith("spotify:show:"):
+                show_id = uri.split(":")[-1]
+                show = sp.show(show_id)
+                name = show["name"]
+                artists = show.get("publisher", "Podcast")
+            else:
+                name = "Spotify item"
+                artists = ""
         else:
+            # Clean and search
             cleaned_query = _clean_hebrew_query(query)
-            # If cleaning leaves nothing, fall back to the original query
             search_query = cleaned_query if cleaned_query else query
-            results = sp.search(q=search_query, type="track", limit=5)
-            items = results.get("tracks", {}).get("items", [])
-            if not items:
-                return f"status: error_not_found, query: {search_query}"
-            track = items[0]
+            
+            is_podcast_intent = any(w in query.lower() for w in ("פודקאסט", "פודקסט", "podcast", "פרק", "episode", "תוכנית", "תכנית"))
+            if is_podcast_intent:
+                # Search for episodes and shows
+                results = sp.search(q=search_query, type="episode,show", limit=5)
+                episodes = results.get("episodes", {}).get("items", [])
+                shows = results.get("shows", {}).get("items", [])
+                if episodes:
+                    item = episodes[0]
+                    uri = item["uri"]
+                    name = item["name"]
+                    artists = item.get("show", {}).get("name", "Podcast")
+                elif shows:
+                    item = shows[0]
+                    uri = item["uri"]
+                    name = item["name"]
+                    artists = item.get("publisher", "Podcast")
+                else:
+                    return f"status: error_not_found, query: {search_query}"
+            else:
+                # Default track search
+                results = sp.search(q=search_query, type="track", limit=5)
+                items = results.get("tracks", {}).get("items", [])
+                if not items:
+                    return f"status: error_not_found, query: {search_query}"
+                track = items[0]
+                uri = track["uri"]
+                name = track["name"]
+                artists = ", ".join(a["name"] for a in track.get("artists", []))
 
         device_id = _active_device_id(sp)
         if device_id is None:
             if _local_spotify_running():
-                artists = ", ".join(a["name"] for a in track.get("artists", []))
-                _run_applescript(f'tell application "Spotify" to play track "{track["uri"]}"')
-                return f"status: playing, track: {track['name']}, artist: {artists}"
+                _run_applescript(f'tell application "Spotify" to play track "{uri}"')
+                return f"status: playing, track: {name}, artist: {artists}"
             return "status: error_no_active_device"
         
-        # Play the target track followed by tracks of the same style/artist
-        rec_uris = _get_recommendations(sp, track)
-        sp.start_playback(device_id=device_id, uris=[track["uri"]] + rec_uris)
+        if uri.startswith("spotify:track:"):
+            rec_uris = _get_recommendations(sp, track)
+            sp.start_playback(device_id=device_id, uris=[uri] + rec_uris)
+        elif uri.startswith("spotify:episode:"):
+            sp.start_playback(device_id=device_id, uris=[uri])
+        elif uri.startswith("spotify:show:") or uri.startswith("spotify:playlist:") or uri.startswith("spotify:album:"):
+            sp.start_playback(device_id=device_id, context_uri=uri)
+        else:
+            sp.start_playback(device_id=device_id, uris=[uri])
+            
     except SpotifyError:
         raise
     except Exception as exc:
         raise SpotifyError(f"Spotify playback failed: {exc}") from exc
 
-    artists = ", ".join(a["name"] for a in track.get("artists", []))
-    return f"status: playing, track: {track['name']}, artist: {artists}"
+    return f"status: playing, track: {name}, artist: {artists}"
 
 
 def seek(seconds: int) -> str:
@@ -379,21 +432,55 @@ def search_track(query: str) -> str:
     try:
         cleaned_query = _clean_hebrew_query(query)
         search_query = cleaned_query if cleaned_query else query
-        results = sp.search(q=search_query, type="track", limit=5)
-        items = results.get("tracks", {}).get("items", [])
-        if not items:
-            return "status: empty_results"
+        results = sp.search(q=search_query, type="track,episode,show", limit=5)
         
         candidates = []
-        for item in items[:3]:
+        
+        # 1. Tracks
+        tracks = results.get("tracks", {}).get("items", [])
+        for item in tracks[:3]:
             artists = ", ".join(a["name"] for a in item.get("artists", []))
             candidates.append({
                 "name": item["name"],
                 "artist": artists,
+                "type": "track",
                 "popularity": item.get("popularity", 0),
                 "uri": item["uri"]
             })
-        return json.dumps(candidates, ensure_ascii=False)
+            
+        # 2. Episodes
+        episodes = results.get("episodes", {}).get("items", [])
+        for item in episodes[:3]:
+            show_name = item.get("show", {}).get("name", "Unknown Show")
+            candidates.append({
+                "name": item["name"],
+                "artist": show_name,
+                "type": "episode",
+                "popularity": 0,
+                "uri": item["uri"]
+            })
+
+        # 3. Shows
+        shows = results.get("shows", {}).get("items", [])
+        for item in shows[:3]:
+            publisher = item.get("publisher", "Unknown Publisher")
+            candidates.append({
+                "name": item["name"],
+                "artist": publisher,
+                "type": "show",
+                "popularity": 0,
+                "uri": item["uri"]
+            })
+            
+        # Prioritize episodes/shows if query has podcast intent
+        is_podcast_intent = any(w in query.lower() for w in ("פודקאסט", "פודקסט", "podcast", "פרק", "episode", "תוכנית", "תכנית"))
+        if is_podcast_intent:
+            candidates.sort(key=lambda c: 0 if c["type"] in ("episode", "show") else 1)
+            
+        if not candidates:
+            return "status: empty_results"
+            
+        return json.dumps(candidates[:3], ensure_ascii=False)
     except Exception as exc:
         return f"status: error_search_failed, details: {exc}"
 
