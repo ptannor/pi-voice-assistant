@@ -213,7 +213,9 @@ def _play_wav_with_barge_in(
                 pcm = audio_queue.get(timeout=0.1)
                 prediction = model.predict(pcm)
                 score = prediction.get(wake_word_key, 0.0)
-                if score > DETECTION_THRESHOLD:
+                # Lower threshold (0.35) during active playback to make it easier to
+                # interrupt the assistant's own voice feedback from the speakers.
+                if score > 0.35:
                     print(f"Barge-in detected (score={score:.2f})! Interrupting playback.", flush=True)
                     sd.stop()
                     barge_in = True
