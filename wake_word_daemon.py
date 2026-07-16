@@ -55,6 +55,7 @@ from brain.config import WAKE_WORD_MODEL_PATH
 from brain.llm import STOP_WORDS, BrainError, ask
 from brain.respond import speak_reply, speak_reply_chunks
 from brain.stt import TranscriptionError, transcribe
+from brain import led
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
 GOODBYE_WAV = Path(__file__).parent / "assets" / "goodbye_chime.wav"
@@ -316,8 +317,19 @@ def _handle_conversation(
     history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0
+    # Locked to whichever language the first turn of *this* activation
+    # detects -- every later turn within the same activation forces that
+    # same language directly (see brain/stt.py's `forced_language`) instead
+    # of re-running the dual-language detection each time. Always starts
+    # fresh at None even when `initial_history` is continuing a prior
+    # conversation's topic -- confirmed necessary: reusing the *previous*
+    # activation's language here force-fed the wrong language into Whisper
+    # when the user switched languages between activations, making it seem
+    # like the assistant "got stuck" on Hebrew.
+    session_language: str | None = None
     while turns < MAX_FOLLOW_UP_TURNS:
         turns += 1
+        led.set_led_listening()
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
         try:
             # Start listening *while* the chime plays, instead of waiting for
@@ -353,6 +365,7 @@ def _handle_conversation(
             if recorded is None:
                 break  # nothing said -- end the conversation, back to wake-word listening
 
+            led.set_led_thinking()
             # Fire immediately, not just on tool-use turns -- the median
             # transcribe+ask+first_audio gap is ~3.4s (p90 ~6.5s, see
             # logs/latency.jsonl) even with no tool call, which otherwise
@@ -398,6 +411,7 @@ def _handle_conversation(
                 focus.mark_content_stopped()
 
             # Synthesize reply to WAV chunks
+            led.set_led_speaking()
             chunks, t_first_audio = speak_reply_chunks(reply)
 
             # Play each chunk with barge-in

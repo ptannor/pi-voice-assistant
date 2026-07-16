@@ -32,6 +32,10 @@ cd "$1"
 echo "Before: $(git rev-parse --short HEAD)"
 git fetch origin
 git pull --ff-only
+if [ ! -d ".respeaker_xvf3800" ]; then
+  echo "Cloning reSpeaker XVF3800 host control tools..."
+  git clone --depth=1 https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY.git .respeaker_xvf3800
+fi
 uv sync
 echo "After:  $(git rev-parse --short HEAD)"
 EOF
