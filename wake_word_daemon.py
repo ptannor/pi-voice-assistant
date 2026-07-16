@@ -190,7 +190,7 @@ def _listen_for_wake_word(
 
     with sd.InputStream(
         device=in_device.index,
-        channels=1,
+        channels=in_device.max_input_channels,
         samplerate=SAMPLE_RATE,
         dtype="int16",
         blocksize=CHUNK_SAMPLES,
@@ -242,7 +242,7 @@ def _play_wav_with_barge_in(
     barge_in = False
     with sd.InputStream(
         device=in_device.index,
-        channels=1,
+        channels=in_device.max_input_channels,
         samplerate=SAMPLE_RATE,
         dtype="int16",
         blocksize=CHUNK_SAMPLES,
