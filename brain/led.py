@@ -35,7 +35,7 @@ def _run_xvf_host(command: str, value: str | None = None) -> bool:
             args,
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=sys.stderr,
             check=True,
             cwd=str(bin_dir)
         )
@@ -47,13 +47,16 @@ def set_led_off():
     _run_xvf_host("LED_EFFECT", "0")
 
 def set_led_listening():
-    # 4 is DoA (Direction of Arrival) - lights up in the direction of the speaker
-    _run_xvf_host("LED_EFFECT", "4")
+    # Set to single color mode (3) and use Cyan (0x00FFFF) for solid, instant feedback
+    _run_xvf_host("LED_EFFECT", "3")
+    _run_xvf_host("LED_COLOR", "0x00FFFF")
 
 def set_led_thinking():
-    # 2 is Rainbow - animation to indicate thinking/processing
+    # 2 is Rainbow - colorful spinning animation indicating thinking
     _run_xvf_host("LED_EFFECT", "2")
 
 def set_led_speaking():
-    # 1 is Breath - gentle pulsing light
+    # 1 is Breath - gentle pulsing cyan/blue light while speaking
     _run_xvf_host("LED_EFFECT", "1")
+    _run_xvf_host("LED_COLOR", "0x00FFFF")
+
