@@ -216,6 +216,8 @@ def _listen_for_wake_word(
             current_threshold = 0.35 if spotify_is_playing else DETECTION_THRESHOLD
             for key in wake_word_language:
                 score = prediction.get(key, 0.0)
+                if score > 0.15:
+                    print(f"Debug: {key} score = {score:.2f} (threshold is {current_threshold:.2f})", flush=True)
                 if score > current_threshold and (now - last_trigger) > COOLDOWN_SECONDS:
                     print(f"Wake word detected: {key} (score={score:.2f})", flush=True)
                     return now, key
