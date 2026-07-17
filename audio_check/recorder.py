@@ -18,14 +18,16 @@ def record_to_wav(
     sample_rate: int,
     channels: int,
 ) -> Path:
-    channels = min(channels, device.max_input_channels) or 1
+    hw_channels = device.max_input_channels
     frames = int(duration_seconds * sample_rate)
 
-    audio = _record_with_fallback(device, frames, sample_rate, channels)
+    audio = _record_with_fallback(device, frames, sample_rate, hw_channels)
+    if hw_channels > 1:
+        audio = audio[:, 0]
 
     filepath.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(filepath), "wb") as wf:
-        wf.setnchannels(channels)
+        wf.setnchannels(1)
         wf.setsampwidth(2)  # int16 -> 2 bytes/sample
         wf.setframerate(sample_rate)
         wf.writeframes(audio.tobytes())
@@ -112,7 +114,7 @@ def record_until_silence(
     finished" from "they didn't say anything," e.g. for deciding whether a
     multi-turn conversation has ended.
     """
-    channels = min(channels, device.max_input_channels) or 1
+    channels = device.max_input_channels
     audio_queue: queue.Queue = queue.Queue()
 
     def callback(indata, frames, time_info, status):
@@ -168,7 +170,7 @@ def record_until_silence(
     audio = np.concatenate(chunks)
     filepath.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(filepath), "wb") as wf:
-        wf.setnchannels(channels)
+        wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(audio.tobytes())

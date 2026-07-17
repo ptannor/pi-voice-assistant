@@ -121,10 +121,22 @@ _CLOSING_PHRASES_HE = (
     "תודה", "זהו", "זה הכל", "להתראות", "ביי", "נגמר",
     "לא תודה", "לא צריך", "עזוב", "בסדר גמור", "מספיק",
 )
+_CLOSING_WORDS_HE = {"לא", "די", "יא", "מספיק", "עצור", "תעצור", "ביי", "שקט", "תודה", "עזוב", "בסדר"}
+_CLOSING_WORDS_EN = {"no", "stop", "dont", "don't", "bye", "thanks", "thank", "you", "enough", "nevermind", "quit", "exit"}
 
 
 def _said_closing_phrase(text: str, language: str) -> bool:
-    lowered = text.lower()  # no-op for Hebrew (no letter case), normalizes English
+    lowered = text.lower()
+    words = [w.strip(".,!? ") for w in lowered.split()]
+    words = [w for w in words if w]
+    if not words:
+        return False
+        
+    # Check if the entire input consists of stop/closing words
+    closing_words = _CLOSING_WORDS_HE if language == "he" else _CLOSING_WORDS_EN
+    if all(w in closing_words for w in words):
+        return True
+        
     phrases = _CLOSING_PHRASES_HE if language == "he" else _CLOSING_PHRASES_EN
     return any(phrase in lowered for phrase in phrases)
 
@@ -190,7 +202,7 @@ def _listen_for_wake_word(
 
     with sd.InputStream(
         device=in_device.index,
-        channels=1,
+        channels=in_device.max_input_channels,
         samplerate=SAMPLE_RATE,
         dtype="int16",
         blocksize=CHUNK_SAMPLES,
@@ -242,7 +254,7 @@ def _play_wav_with_barge_in(
     barge_in = False
     with sd.InputStream(
         device=in_device.index,
-        channels=1,
+        channels=in_device.max_input_channels,
         samplerate=SAMPLE_RATE,
         dtype="int16",
         blocksize=CHUNK_SAMPLES,
@@ -316,6 +328,16 @@ def _handle_conversation(
     history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0
+    # Locked to whichever language the first turn of *this* activation
+    # detects -- every later turn within the same activation forces that
+    # same language directly (see brain/stt.py's `forced_language`) instead
+    # of re-running the dual-language detection each time. Always starts
+    # fresh at None even when `initial_history` is continuing a prior
+    # conversation's topic -- confirmed necessary: reusing the *previous*
+    # activation's language here force-fed the wrong language into Whisper
+    # when the user switched languages between activations, making it seem
+    # like the assistant "got stuck" on Hebrew.
+    session_language: str | None = None
     while turns < MAX_FOLLOW_UP_TURNS:
         turns += 1
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
@@ -497,6 +519,14 @@ def main() -> None:
     try:
         in_device = find_input_device(cfg.input_name_hint)
         out_device = find_output_device(cfg.output_name_hint)
+        
+        global DETECTION_THRESHOLD
+        if "respeaker" in in_device.name.lower():
+            DETECTION_THRESHOLD = 0.45
+            print(f"reSpeaker detected: adjusting default wake-word detection threshold to {DETECTION_THRESHOLD}", flush=True)
+        else:
+            DETECTION_THRESHOLD = 0.6
+            print(f"Standard mic detected: setting default wake-word detection threshold to {DETECTION_THRESHOLD}", flush=True)
     except AudioCheckError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         mic_leds.enter_error()

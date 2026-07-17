@@ -132,6 +132,12 @@ def enter_listening() -> None:
     ).start()
 
 
+def enter_thinking() -> None:
+    """The assistant is processing the query (rainbow animation)."""
+    _bump_generation()
+    threading.Thread(target=lambda: _run("led_effect", str(EFFECT_RAINBOW)), daemon=True).start()
+
+
 def enter_speaking() -> None:
     """The assistant's spoken reply is playing."""
     _bump_generation()
