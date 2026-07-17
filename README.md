@@ -452,6 +452,39 @@ turned down (a real issue hit earlier in this project), you're speaking at a
 normal distance/volume, and the terminal printed `Listening for 'alexa' on
 '...'...` before you spoke.
 
+## Mic LED patterns
+
+The mic is a **Seeed reSpeaker XVF3800 4-Mic Array**. Out of the box it runs
+its own default LED effect (`doa`): a blue voice-activity trace with a
+brighter spot in the direction of arrival. `mic_leds.py` layers three more
+patterns on top of that idle look, driven by Seeed's `xvf_host` USB control
+tool:
+
+- **Listening** (fast violet breathing) — the wake word just fired and it's
+  actively recording your question. This is the most important one: it's
+  your only signal that it actually heard "Alexa" and is waiting on you.
+- **Speaking** (solid amber, no motion) — the assistant's reply is playing.
+- **Idle transition** (a quick rainbow sweep) — plays once when a
+  conversation ends, then settles back into the default `doa` idle look.
+
+Colors/speeds are constants at the top of `mic_leds.py` — tweak freely.
+
+**Setup (per machine — Mac dev box and Pi both need this):**
+
+1. Download the `xvf_host` binary for your platform from
+   [respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY)'s
+   `host_control/<platform>/` directory (`mac_arm64`, `rpi_64bit`,
+   `linux_x86_64`, `jetson`, or `win32`).
+2. Place it at `vendor/xvf_host/<platform>/xvf_host` (gitignored — it's a
+   third-party binary, not something to commit) and `chmod +x` it.
+3. Verify with `./vendor/xvf_host/<platform>/xvf_host VERSION` while the
+   array is plugged in.
+
+If the binary isn't found (or the array isn't plugged in), `mic_leds.py`
+logs one warning and no-ops — LED patterns are cosmetic, never a hard
+dependency of the voice pipeline. Override the binary path with the
+`XVF_HOST_BIN` env var if you'd rather not use the `vendor/` layout.
+
 ## Long-term memory
 
 `brain/llm.py`'s `history` only lasts one conversation (it resets every time

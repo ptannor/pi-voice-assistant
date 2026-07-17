@@ -39,6 +39,7 @@ import openwakeword
 import sounddevice as sd
 from openwakeword.model import Model
 
+import mic_leds
 from brain.audio_focus import Channel, manager as focus
 from audio_check.config import DEFAULT_CONFIG
 from audio_check.devices import Device, find_input_device, find_output_device
@@ -93,8 +94,8 @@ INITIAL_QUERY_TIMEOUT = 4.0
 FOLLOW_UP_TIMEOUT = 3.5  # long enough for a real follow-up, short enough to limit exposure to ambient noise
 MAX_FOLLOW_UP_TURNS = 5  # safety cap -- require a fresh "Alexa" after a while regardless
 # How long after a conversation ends a fresh "Alexa" is still treated as a
-# continuation of it (same history/session_language) rather than starting
-# blank. Confirmed needed: a closed-answer reply (not ending in "?") ends the
+# continuation of it (same history) rather than starting blank. Confirmed
+# needed: a closed-answer reply (not ending in "?") ends the
 # conversation by design, but the user often says "Alexa" again seconds later
 # to ask an obvious follow-up ("what about showtimes for that one") -- without
 # this, that follow-up got answered with zero memory of what was just
@@ -281,16 +282,6 @@ def _handle_conversation(
     history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0
-    # Locked to whichever language the first turn of *this* activation
-    # detects -- every later turn within the same activation forces that
-    # same language directly (see brain/stt.py's `forced_language`) instead
-    # of re-running the dual-language detection each time. Always starts
-    # fresh at None even when `initial_history` is continuing a prior
-    # conversation's topic -- confirmed necessary: reusing the *previous*
-    # activation's language here force-fed the wrong language into Whisper
-    # when the user switched languages between activations, making it seem
-    # like the assistant "got stuck" on Hebrew.
-    session_language: str | None = None
     while turns < MAX_FOLLOW_UP_TURNS:
         turns += 1
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
@@ -309,6 +300,7 @@ def _handle_conversation(
             # voice. This chime is short, fixed, and known in advance, and is
             # never treated as speech itself -- only real speech detected
             # right after it gets kept.
+            mic_leds.enter_listening()
             t0 = time.monotonic()
             with ThreadPoolExecutor(max_workers=2) as pool:
                 record_future = pool.submit(
@@ -334,9 +326,10 @@ def _handle_conversation(
             # below plays a second one partway through the longer wait.
             play_wav_async(THINKING_WAV, out_device)
 
-            stt_mode = "forced" if session_language else "dual"
-            text, language = transcribe(query_wav, forced_language=session_language)
-            session_language = language
+            # Re-detected fresh every turn (not locked to the conversation's
+            # first turn) -- see brain/stt.py's transcribe() docstring for why.
+            stt_mode = "dual"
+            text, language = transcribe(query_wav)
             t2 = time.monotonic()
             print(f"Heard ({language}): {text}", flush=True)
             if not text:
@@ -373,6 +366,7 @@ def _handle_conversation(
             chunks, t_first_audio = speak_reply_chunks(reply)
 
             # Play each chunk with barge-in
+            mic_leds.enter_speaking()
             barge_in = False
             for wav in chunks:
                 barge_in = _play_wav_with_barge_in(wav, in_device, out_device, model, wake_word_key)
@@ -434,6 +428,7 @@ def _handle_conversation(
     # Every exit from the loop above (silence timeout, closing phrase, turn
     # cap, or an error) falls through to here -- one clear signal that it's
     # stopped listening, distinct from the ascending "now listening" chime.
+    mic_leds.enter_idle_transition()
     # Skip it when an alarm preempted us: the alarm is what should be audible,
     # not a goodbye chime played over it.
     if not preempted:
@@ -462,6 +457,7 @@ def main() -> None:
         sys.exit(1)
 
     model, wake_word_key = _load_wake_word_model()
+    mic_leds.enter_idle()
 
     print(
         f"Listening for '{wake_word_key}' on '{in_device.name}' (index {in_device.index})...",
