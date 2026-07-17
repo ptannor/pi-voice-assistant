@@ -419,7 +419,7 @@ TOOLS = [
             "properties": {
                 "days_ahead": {
                     "type": "integer",
-                    "description": "How many days ahead to look. Default 7.",
+                    "description": "How many days ahead to look. Default 60 -- pass a smaller value for a narrower question (e.g. 'what do I have today/this week'), or a larger one for questions further out.",
                 }
             },
             "required": [],
@@ -572,7 +572,7 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
 
     if name == "list_calendar_events":
         try:
-            return gcal.list_events(tool_input.get("days_ahead", 7))
+            return gcal.list_events(tool_input.get("days_ahead", 60))
         except gcal.CalendarError as exc:
             return f"status: error_calendar_failed, details: {exc}"
 

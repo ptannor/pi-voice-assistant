@@ -172,7 +172,7 @@ def add_event(
     )
 
 
-def list_events(days_ahead: int = 7) -> str:
+def list_events(days_ahead: int = 60) -> str:
     """Compact plain-text listing of upcoming event instances over the next
     `days_ahead` days, grouped by reminder_group so a twice-daily medication
     reads as one line, not two. Google expands recurrences itself
