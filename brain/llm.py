@@ -284,15 +284,49 @@ def _timer_prompt_line() -> str:
     return ""
 
 
-def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]]) -> str:
+def _last_tool_result_str(messages: list[dict]) -> str | None:
+    """The content string of the most recently executed tool_result in
+    `messages`, or None if this turn had no tool call at all."""
+    for msg in reversed(messages):
+        if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+            for content in msg["content"]:
+                if content.get("type") == "tool_result":
+                    return str(content.get("content"))
+    return None
+
+
+def _playback_fallback_reply(language: str, result: str | None) -> str:
+    # Mirrors the per-status guidance the system prompt gives Claude for its
+    # own text replies (see SYSTEM_PROMPT's music section) -- needed here too
+    # since this only runs when Claude generated no text at all this turn.
+    # Confirmed necessary: a failed play_music call with no Claude text used
+    # to fall through to a blanket "" here, so a genuine failure (e.g. no
+    # active Spotify device) played nothing and said nothing -- a silent
+    # dead end indistinguishable from a real, successful, intentionally-quiet
+    # play. Only a *confirmed* "status: playing/resumed/seeked/skipped/
+    # stopped" result should stay silent; anything else must say something.
+    if result is None:
+        return "משהו השתבש, לא הצלחתי לבצע את זה." if language == "he" else "Something went wrong -- I couldn't do that."
+    if "status: error_no_active_device" in result:
+        return "פתח בבקשה את ספוטיפיי במכשיר כלשהו תחילה." if language == "he" else "Open Spotify on a device first, then try again."
+    if "status: error_search_failed" in result or "not authorized" in result.lower() or "not logged in" in result.lower():
+        return "ספוטיפיי עדיין לא מחובר במכשיר הזה, מישהו צריך להתחבר קודם." if language == "he" else "Spotify isn't set up on this device yet -- someone needs to log in first."
+    if "status: error_" in result:
+        return "לא הצלחתי לבצע את זה, סליחה." if language == "he" else "That didn't work, sorry."
+    return ""  # confirmed success -- stay silent as requested
+
+
+def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]], last_tool_result: str | None) -> str:
     # Find if any tool was executed in this turn
     tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
     if not tool_stages:
         return "לא הצלחתי למצוא תשובה ברורה לזה, סליחה." if language == "he" else "Sorry, I couldn't find a clear answer to that."
-    
+
     # Get the last tool stage name
     last_tool = tool_stages[-1].replace("tool:", "")
-    if "stop" in last_tool or "cancel" in last_tool or "play_music" in last_tool or "seek_music" in last_tool:
+    if "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool or "stop_music" in last_tool:
+        return _playback_fallback_reply(language, last_tool_result)
+    if "stop" in last_tool or "cancel" in last_tool:
         return ""
     elif "set_timer" in last_tool:
         return "הטיימר הוגדר." if language == "he" else "Timer set."
@@ -408,7 +442,7 @@ def ask(
 
     reply = "".join(block.text for block in response.content if block.type == "text").strip()
     if not reply:
-        reply = _get_empty_reply_fallback(language, timeline)
+        reply = _get_empty_reply_fallback(language, timeline, _last_tool_result_str(messages))
 
     # Force silent replies for stop/cancel/play tools as requested by user ("you don't need to say עצרתי" or "בוצע")
     tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
