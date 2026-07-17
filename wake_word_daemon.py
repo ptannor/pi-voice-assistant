@@ -375,6 +375,7 @@ def _handle_conversation(
             reply, history, ask_timeline = ask(
                 text, language, history,
                 on_tool_call=lambda: play_wav_async(THINKING_WAV, out_device),
+                out_device=out_device,
             )
             t3 = time.monotonic()
             print(f"Claude: {reply}", flush=True)

@@ -32,7 +32,16 @@ from audio_check.player import play_wav
 
 from . import gcal
 from .audio_focus import Channel, manager as focus
-from .config import HOUSEHOLD_TIMEZONE, REMINDER_LEAD_MINUTES, TELEGRAM_ALLOWED_CHAT_IDS, TELEGRAM_BOT_TOKEN
+from .config import (
+    CRITICAL_REMINDER_SOUND_PATH,
+    HOUSEHOLD_TIMEZONE,
+    REMINDER_LEAD_MINUTES,
+    REMINDER_SOUND_PATH,
+    TELEGRAM_ALLOWED_CHAT_IDS,
+    TELEGRAM_BOT_TOKEN,
+    WAKEUP_SOUND_PATH,
+    WAKEUP_TITLE_KEYWORD,
+)
 from .respond import speak_reply
 
 FETCH_INTERVAL_SECONDS = 5 * 60
@@ -48,11 +57,23 @@ DIALOG_DEFER_SECONDS = 90
 # still speaks; older than this, it's text-only -- announcing "take your 8am
 # antibiotics" out loud at 2pm is more confusing than useful.
 LATE_FIRE_GRACE_MINUTES = 30
+# How often a critical reminder (e.g. medication) re-nags while unacknowledged.
+CRITICAL_NAG_INTERVAL_SECONDS = 3 * 60
+# Safety cap: stop nagging after this long regardless of acknowledgement, so a
+# missed confirmation can't ring forever. Cancel/re-add the reminder as a
+# workaround if a real one runs past this.
+CRITICAL_MAX_NAG_SECONDS = 2 * 60 * 60
 
 STATE_PATH = Path(__file__).parent.parent / "logs" / "reminders_fired.json"
 CHIME_WAV = Path(__file__).parent.parent / "assets" / "chime.wav"
 
 _lead = timedelta(minutes=REMINDER_LEAD_MINUTES)
+
+# item_id -> calendar item, for critical reminders currently ringing/nagging.
+# Popped by acknowledge() once a household member explicitly confirms one is
+# handled -- see _fire_critical.
+_critical_pending: dict[str, dict] = {}
+_critical_lock = threading.Lock()
 
 
 def _tz() -> ZoneInfo:
@@ -84,6 +105,49 @@ def _is_hebrew(text: str) -> bool:
     return any("֐" <= c <= "׾" for c in text)
 
 
+def _is_critical(item: dict) -> bool:
+    """Whether `item` is a critical reminder (e.g. medication) that should
+    keep nagging until explicitly acknowledged via acknowledge() below,
+    instead of firing once like a normal reminder.
+
+    Stubbed False for now -- the calendar-side marking mechanism (how an
+    event actually gets flagged critical when created, and the confirmation
+    tool Claude calls when the user says they've handled it) is being built
+    separately. Wire the real check in here once that lands, e.g.:
+        return item.get("extendedProperties", {}).get("private", {}).get("critical") == "true"
+    matching the existing _event_group helper's style in brain/gcal.py.
+    """
+    return False
+
+
+def _sound_for(item: dict) -> Path:
+    """Which sound to play before speaking `item` -- wake-up alarm (matched by
+    title, see WAKEUP_TITLE_KEYWORD) takes priority, then critical reminders,
+    then the regular reminder sound; falls back to the generic chime if the
+    relevant path isn't configured (see brain/config.py, local_sounds/ isn't
+    populated in a fresh clone).
+    """
+    title = item.get("summary", "")
+    if WAKEUP_TITLE_KEYWORD and WAKEUP_TITLE_KEYWORD.lower() in title.lower():
+        return Path(WAKEUP_SOUND_PATH) if WAKEUP_SOUND_PATH else CHIME_WAV
+    if _is_critical(item):
+        return Path(CRITICAL_REMINDER_SOUND_PATH) if CRITICAL_REMINDER_SOUND_PATH else CHIME_WAV
+    return Path(REMINDER_SOUND_PATH) if REMINDER_SOUND_PATH else CHIME_WAV
+
+
+def acknowledge(item_id: str) -> bool:
+    """Call this from the (separately-built) confirmation-tool handler once a
+    household member explicitly confirms a critical reminder was handled.
+    Returns whether there was actually something pending to acknowledge (so
+    the caller can tell Claude "nothing to confirm" vs. "done").
+    """
+    with _critical_lock:
+        was_pending = _critical_pending.pop(item_id, None) is not None
+    if was_pending:
+        focus.release(Channel.ALERT)
+    return was_pending
+
+
 def _push_telegram(text: str) -> None:
     """Best-effort text push to every allowlisted chat. A Telegram outage (or
     the bot not being configured at all) must never block the spoken
@@ -101,11 +165,11 @@ def _push_telegram(text: str) -> None:
             pass
 
 
-def _speak(text: str, out_device: Device) -> None:
+def _speak(text: str, item: dict, out_device: Device) -> None:
     focus.acquire(Channel.ALERT)
     try:
         try:
-            play_wav(CHIME_WAV, out_device)
+            play_wav(_sound_for(item), out_device)
         except Exception:
             pass
         speak_reply(text, out_device)
@@ -113,12 +177,61 @@ def _speak(text: str, out_device: Device) -> None:
         focus.release(Channel.ALERT)
 
 
+def _fire_critical(item: dict, item_id: str, text: str, out_device: Device) -> None:
+    """Runs in its own thread (see _fire) so a long-nagging critical reminder
+    never blocks _poll_loop from checking/firing anything else. Keeps ALERT
+    held for the whole nag duration (not toggled per-cycle) so lower-priority
+    audio can't sneak back in between nags -- released only by acknowledge()
+    or the safety-cap timeout below.
+    """
+    with _critical_lock:
+        _critical_pending[item_id] = item
+    focus.acquire(Channel.ALERT)
+    _push_telegram(text)
+
+    start = time.monotonic()
+    while time.monotonic() - start < CRITICAL_MAX_NAG_SECONDS:
+        with _critical_lock:
+            if item_id not in _critical_pending:
+                return  # acknowledged
+        print(f"Critical reminder still pending, re-nagging: {item.get('summary', 'Reminder')}", flush=True)
+        try:
+            play_wav(_sound_for(item), out_device)
+        except Exception:
+            pass
+        try:
+            speak_reply(text, out_device)
+        except Exception as exc:
+            print(f"Failed to speak critical reminder: {exc}", flush=True)
+
+        waited = 0.0
+        while waited < CRITICAL_NAG_INTERVAL_SECONDS:
+            with _critical_lock:
+                if item_id not in _critical_pending:
+                    return  # acknowledged mid-wait
+            time.sleep(2)
+            waited += 2
+
+    # Safety cap hit -- stop nagging regardless of acknowledgement.
+    print(f"Critical reminder hit the {CRITICAL_MAX_NAG_SECONDS}s nag cap, giving up: {item.get('summary')}", flush=True)
+    with _critical_lock:
+        _critical_pending.pop(item_id, None)
+    focus.release(Channel.ALERT)
+
+
 def _fire(item: dict, out_device: Device) -> None:
     title = item.get("summary", "Reminder")
     text = f"תזכורת: {title}" if _is_hebrew(title) else f"Reminder: {title}"
+    item_id = item.get("id")
+
+    if item_id and _is_critical(item):
+        print(f"Critical reminder firing: {title}", flush=True)
+        threading.Thread(target=_fire_critical, args=(item, item_id, text, out_device), daemon=True).start()
+        return
+
     print(f"Reminder firing: {title}", flush=True)
     try:
-        _speak(text, out_device)
+        _speak(text, item, out_device)
     except Exception as exc:
         print(f"Failed to speak reminder: {exc}", flush=True)
     _push_telegram(text)

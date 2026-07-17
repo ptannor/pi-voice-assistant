@@ -1,23 +1,27 @@
 import threading
 import time
+from pathlib import Path
+
+from audio_check.player import play_wav
+
 from . import spotify
 from .audio_focus import Channel, manager as focus
+from .config import TIMER_SOUND_PATH
 
 
 _active_timer_thread = None
 _stop_event = threading.Event()
 
-_REGULAR_TRACK = "spotify:track:70C4NyhjD5OZUMzvWZ3njJ"  # Piano Man, Billy Joel
-# Requested (one of the kids, in Hebrew): timers longer than 15 minutes get
-# Hedwig's Theme instead of the regular track.
-_LONG_TIMER_THRESHOLD_SECONDS = 15 * 60
-_LONG_TIMER_QUERY = "Hedwig's Theme Harry Potter"
 
-
-def set_timer(duration_seconds: int) -> str:
+def set_timer(duration_seconds: int, out_device=None) -> str:
     """Starts a background thread that sleeps for `duration_seconds` and then
-    starts playing an end-of-timer track on Spotify -- Hedwig's Theme for
-    timers over 15 minutes, Piano Man otherwise.
+    loops TIMER_SOUND_PATH (see brain/config.py) until cancelled -- one sound
+    for every timer regardless of duration, replacing the old Piano
+    Man/Hedwig's Theme Spotify tracks by household request. `out_device` is
+    the audio_check.devices.Device to play on; if it's None (e.g. a caller
+    with no speaker, like the Telegram bot) the timer still runs but ends
+    silently, same tolerance the rest of this codebase gives a missing
+    audio cue.
     """
     global _active_timer_thread, _stop_event
 
@@ -33,21 +37,24 @@ def set_timer(duration_seconds: int) -> str:
             time.sleep(1)
             elapsed += 1
 
-        if not _stop_event.is_set():
-            # Grab the ALERT channel first: this snapshots+pauses any music the
-            # user had playing (so it can resume after the alarm is dismissed)
-            # and preempts an in-progress spoken reply, before the alarm track
-            # takes over the Spotify device.
-            focus.acquire(Channel.ALERT)
+        if _stop_event.is_set():
+            return
+
+        # Grab the ALERT channel first: this snapshots+pauses any music the
+        # user had playing (so it can resume after the alarm is dismissed)
+        # and preempts an in-progress spoken reply, before the alarm sound
+        # starts.
+        focus.acquire(Channel.ALERT)
+        if out_device is None or not TIMER_SOUND_PATH:
+            print("Timer finished! (no output device or TIMER_SOUND_PATH configured -- silent)", flush=True)
+            return
+        print("Timer finished! Looping timer sound until cancelled.", flush=True)
+        while not _stop_event.is_set():
             try:
-                if duration_seconds > _LONG_TIMER_THRESHOLD_SECONDS:
-                    print("Timer finished! Playing Hedwig's Theme (long timer).", flush=True)
-                    spotify.play(_LONG_TIMER_QUERY)
-                else:
-                    print("Timer finished! Playing Piano Man Billy Joel (exact track).", flush=True)
-                    spotify.play(_REGULAR_TRACK)
+                play_wav(Path(TIMER_SOUND_PATH), out_device)
             except Exception as e:
-                print(f"Failed to play timer-end track: {e}", flush=True)
+                print(f"Failed to play timer sound: {e}", flush=True)
+                break
 
     _active_timer_thread = threading.Thread(target=timer_target, daemon=True)
     _active_timer_thread.start()
@@ -55,7 +62,8 @@ def set_timer(duration_seconds: int) -> str:
 
 
 def cancel_timer() -> str:
-    """Cancels the currently running background timer and stops Spotify music."""
+    """Cancels the currently running background timer and stops Spotify music
+    (in case regular music, not the timer sound, is what's playing)."""
     global _active_timer_thread, _stop_event
     stopped_music = False
     try:
@@ -70,7 +78,7 @@ def cancel_timer() -> str:
     if _active_timer_thread and _active_timer_thread.is_alive():
         _stop_event.set()
         _active_timer_thread.join(timeout=1.0)
-        return "הטיימר בוטל והשיר נעצר."
+        return "הטיימר בוטל."
 
     if stopped_music:
         return "השיר נעצר בהצלחה."

@@ -4,6 +4,8 @@ __pycache__/
 venv/
 recordings/*.wav
 !recordings/.gitkeep
+local_sounds/*
+!local_sounds/.gitkeep
 .DS_Store
 .pi-config
 .env

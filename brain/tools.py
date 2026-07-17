@@ -475,11 +475,15 @@ def get_tools_for_language(language: str) -> list[dict]:
     ]
 
 
-def execute_tool(name: str, language: str, tool_input: dict) -> str:
+def execute_tool(name: str, language: str, tool_input: dict, out_device=None) -> str:
     """Dispatch a tool call. Every tool except `web_search` is still a stub --
     always returns "not built yet", except when `language` isn't one this
     skill will support (see TOOL_LANGUAGES), which returns a language-mismatch
     message instead.
+
+    `out_device` (an audio_check.devices.Device, or None) is only used by
+    set_timer_hebrew/english, which need somewhere to loop the timer sound
+    when it finishes -- see brain/timer.py.
     """
     allowed = TOOL_LANGUAGES.get(name, ["en", "he"])
     if language not in allowed:
@@ -547,7 +551,7 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
             return f"status: error_stop_failed, details: {exc}"
 
     if name in ("set_timer_hebrew", "set_timer_english"):
-        return timer.set_timer(tool_input["duration_seconds"])
+        return timer.set_timer(tool_input["duration_seconds"], out_device)
 
     if name in ("cancel_timer_hebrew", "cancel_timer_english"):
         return timer.cancel_timer()

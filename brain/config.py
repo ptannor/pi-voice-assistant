@@ -64,6 +64,33 @@ WAKE_WORD_MODEL_PATH = _read_pi_config_value("WAKE_WORD_MODEL_PATH") or (
     str(_DEFAULT_WAKE_WORD_MODEL) if _DEFAULT_WAKE_WORD_MODEL.exists() else None
 )
 
+# Sound paths for timer/reminder/wake-up alerts (see brain/timer.py,
+# brain/reminders.py). All four are personal/copyrighted audio (clips from a
+# YouTube "Alexa alarm sounds" compilation, plus a downloaded MP3) -- never
+# committed to this public repo, hence local_sounds/ (gitignored, see
+# .gitignore) rather than assets/. Defaults to the in-repo path if present,
+# same pattern as WAKE_WORD_MODEL_PATH above; override via .pi-config to
+# point elsewhere, or leave local_sounds/ empty to fall back to None (see
+# each consumer for its own no-sound-configured fallback behavior).
+_LOCAL_SOUNDS_DIR = Path(__file__).parent.parent / "local_sounds"
+
+
+def _sound_path(pi_config_key: str, filename: str) -> str | None:
+    default = _LOCAL_SOUNDS_DIR / filename
+    return _read_pi_config_value(pi_config_key) or (str(default) if default.exists() else None)
+
+
+TIMER_SOUND_PATH = _sound_path("TIMER_SOUND_PATH", "timer.wav")
+REMINDER_SOUND_PATH = _sound_path("REMINDER_SOUND_PATH", "reminder.wav")
+CRITICAL_REMINDER_SOUND_PATH = _sound_path("CRITICAL_REMINDER_SOUND_PATH", "critical_reminder.wav")
+WAKEUP_SOUND_PATH = _sound_path("WAKEUP_SOUND_PATH", "wakeup.wav")
+
+# Matched (case-insensitive substring) against a reminder's title to tell a
+# wake-up alarm apart from a regular one (see brain/reminders.py). No new
+# calendar schema field for this, so it doesn't touch/conflict with the
+# critical-reminder marking mechanism built separately (see gcal.py/tools.py).
+WAKEUP_TITLE_KEYWORD = _read_pi_config_value("WAKEUP_TITLE_KEYWORD") or "wake up"
+
 # Comma-separated family member names, in each language they'd actually be
 # spoken/read in -- fed to Whisper as a transcription hint (see brain/stt.py)
 # so it's biased toward recognizing them correctly. Confirmed necessary: an

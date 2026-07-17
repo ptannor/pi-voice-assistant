@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 
+from audio_check.devices import Device
+
 from .config import (
     ANTHROPIC_API_KEY,
     CLAUDE_MODEL,
@@ -390,6 +392,7 @@ def ask(
     language: str,
     history: list[dict] | None = None,
     on_tool_call: Callable[[], None] | None = None,
+    out_device: Device | None = None,
 ) -> tuple[str, list[dict], list[tuple[str, float]]]:
     """`language` is "he" or "en" (see brain/language.py).
 
@@ -408,6 +411,13 @@ def ask(
     on most factual questions and the assistant would otherwise sit silent
     for several seconds. Best-effort: an exception from it is swallowed
     rather than failing the whole turn over a missed sound cue.
+
+    `out_device`, if given, is passed through to tools that need to play
+    audio themselves rather than just returning text (currently only
+    set_timer_hebrew/english -- see brain/timer.py). None for callers with no
+    speaker at all (e.g. telegram_bot_daemon.py's text-only interface); those
+    tools degrade to a silent no-op sound in that case, same as any other
+    best-effort audio cue in this codebase.
     """
     client = _get_client()
     timeline: list[tuple[str, float]] = []
@@ -455,7 +465,9 @@ def ask(
                 {
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": _timed(f"tool:{block.name}", execute_tool, block.name, language, block.input),
+                    "content": _timed(
+                        f"tool:{block.name}", execute_tool, block.name, language, block.input, out_device
+                    ),
                 }
                 for block in response.content
                 if block.type == "tool_use"
