@@ -475,10 +475,10 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
         except spotify.SpotifyError as exc:
             return f"status: error_stop_failed, details: {exc}"
 
-    if name == "set_timer_hebrew":
+    if name in ("set_timer_hebrew", "set_timer_english"):
         return timer.set_timer(tool_input["duration_seconds"])
 
-    if name == "cancel_timer_hebrew":
+    if name in ("cancel_timer_hebrew", "cancel_timer_english"):
         return timer.cancel_timer()
 
     if name == "tell_joke_hebrew":

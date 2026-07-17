@@ -3,13 +3,27 @@ import sys
 import subprocess
 from pathlib import Path
 
+import sounddevice as sd
+
 REPO_ROOT = Path(__file__).parent.parent
 MAC_BIN_DIR = REPO_ROOT / ".respeaker_xvf3800" / "host_control" / "mac_arm64"
 PI_BIN_DIR = REPO_ROOT / ".respeaker_xvf3800" / "host_control" / "rpi_64bit"
 
+def _respeaker_connected() -> bool:
+    """Check if a reSpeaker device is connected via USB/CoreAudio/ALSA."""
+    try:
+        devices = sd.query_devices()
+        return any("respeaker" in d["name"].lower() for d in devices)
+    except Exception:
+        return False
+
 def _run_xvf_host(command: str, value: str | None = None) -> bool:
     """Helper to run the platform-appropriate xvf_host binary."""
     try:
+        # Avoid running if no reSpeaker is connected
+        if not _respeaker_connected():
+            return False
+
         is_mac = sys.platform == "darwin"
         
         if is_mac:
@@ -35,7 +49,7 @@ def _run_xvf_host(command: str, value: str | None = None) -> bool:
             args,
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=sys.stderr,
+            stderr=subprocess.DEVNULL,
             check=True,
             cwd=str(bin_dir)
         )
