@@ -116,6 +116,14 @@ def find_input_device(name_hint: str | tuple[str, ...] | None) -> Device:
         )
 
     default_in, _ = _default_indices()
+    import sys
+    if sys.platform == "darwin":
+        mac_mics = [d for d in devices if "macbook pro microphone" in d.name.lower()]
+        if mac_mics:
+            # If the system default input is set to something else (like a quiet/broken external mic),
+            # override it to use the reliable built-in MacBook microphone.
+            return mac_mics[0]
+
     for d in devices:
         if d.index == default_in:
             return d
