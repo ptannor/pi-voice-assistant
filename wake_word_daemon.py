@@ -55,7 +55,6 @@ from brain.config import WAKE_WORD_MODEL_PATH
 from brain.llm import STOP_WORDS, BrainError, ask
 from brain.respond import speak_reply, speak_reply_chunks
 from brain.stt import TranscriptionError, transcribe
-from brain import led
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
 GOODBYE_WAV = Path(__file__).parent / "assets" / "goodbye_chime.wav"
@@ -122,10 +121,22 @@ _CLOSING_PHRASES_HE = (
     "תודה", "זהו", "זה הכל", "להתראות", "ביי", "נגמר",
     "לא תודה", "לא צריך", "עזוב", "בסדר גמור", "מספיק",
 )
+_CLOSING_WORDS_HE = {"לא", "די", "יא", "מספיק", "עצור", "תעצור", "ביי", "שקט", "תודה", "עזוב", "בסדר"}
+_CLOSING_WORDS_EN = {"no", "stop", "dont", "don't", "bye", "thanks", "thank", "you", "enough", "nevermind", "quit", "exit"}
 
 
 def _said_closing_phrase(text: str, language: str) -> bool:
-    lowered = text.lower()  # no-op for Hebrew (no letter case), normalizes English
+    lowered = text.lower()
+    words = [w.strip(".,!? ") for w in lowered.split()]
+    words = [w for w in words if w]
+    if not words:
+        return False
+        
+    # Check if the entire input consists of stop/closing words
+    closing_words = _CLOSING_WORDS_HE if language == "he" else _CLOSING_WORDS_EN
+    if all(w in closing_words for w in words):
+        return True
+        
     phrases = _CLOSING_PHRASES_HE if language == "he" else _CLOSING_PHRASES_EN
     return any(phrase in lowered for phrase in phrases)
 
@@ -329,7 +340,6 @@ def _handle_conversation(
     session_language: str | None = None
     while turns < MAX_FOLLOW_UP_TURNS:
         turns += 1
-        led.set_led_listening()
         query_wav = Path(tempfile.mktemp(suffix=".wav"))
         try:
             # Start listening *while* the chime plays, instead of waiting for
@@ -365,7 +375,6 @@ def _handle_conversation(
             if recorded is None:
                 break  # nothing said -- end the conversation, back to wake-word listening
 
-            led.set_led_thinking()
             # Fire immediately, not just on tool-use turns -- the median
             # transcribe+ask+first_audio gap is ~3.4s (p90 ~6.5s, see
             # logs/latency.jsonl) even with no tool call, which otherwise
@@ -411,7 +420,6 @@ def _handle_conversation(
                 focus.mark_content_stopped()
 
             # Synthesize reply to WAV chunks
-            led.set_led_speaking()
             chunks, t_first_audio = speak_reply_chunks(reply)
 
             # Play each chunk with barge-in
