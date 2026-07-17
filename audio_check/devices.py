@@ -142,7 +142,26 @@ def find_output_device(name_hint: str | None) -> Device:
         )
 
     _, default_out = _default_indices()
+    default_device = None
     for d in devices:
         if d.index == default_out:
-            return d
+            default_device = d
+            break
+
+    # reSpeaker XVF3800 registers as an output device but has no built-in speakers.
+    # If the system default is reSpeaker, try to find a better hardware output (e.g. Speakers, Headphones, HDMI).
+    if default_device and "respeaker" in default_device.name.lower():
+        better_devices = [d for d in devices if "respeaker" not in d.name.lower()]
+        if better_devices:
+            prefer_keywords = ["speakers", "headphones", "hdmi", "bcm2835"]
+            for kw in prefer_keywords:
+                for d in better_devices:
+                    if kw in d.name.lower():
+                        print(f"Avoiding reSpeaker output. Auto-selected output: {d.name}", flush=True)
+                        return d
+            print(f"Avoiding reSpeaker output. Auto-selected output: {better_devices[0].name}", flush=True)
+            return better_devices[0]
+
+    if default_device:
+        return default_device
     return devices[0]
