@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Wake word daemon: listens for two wake words -- "Alexa" for English, "Hey
-Jarvis" for Hebrew -- then records a question, sends it through Claude, and
-speaks the reply back. Which wake word triggered the conversation determines
-the first turn's language deterministically (see _load_wake_word_model);
+"""Wake word daemon: listens for two wake words -- "Alexa" for English,
+"Mendy" (the custom-trained "Menachem Mendel" model at models/mendy.onnx)
+for Hebrew -- then records a question, sends it through Claude, and speaks
+the reply back. Which wake word triggered the conversation determines the
+first turn's language deterministically (see _load_wake_word_model);
 follow-up turns within the same conversation still re-detect language per
 utterance, since a conversation may switch languages mid-stream.
 
-Uses openWakeWord's free, fully open-source pretrained "alexa" and
-"hey_jarvis" models (no account, no API key, no signup) -- "hey_jarvis" is a
-placeholder Hebrew trigger (its English meaning is irrelevant, it's just a
-distinct acoustic trigger) until the custom-trained "Menachem Mendel" /
-"Mendy" wake word is ready to take its place.
+Uses openWakeWord's free, fully open-source pretrained "alexa" model for
+English (no account, no API key, no signup) alongside the custom "mendy"
+model for Hebrew. If models/mendy.onnx is ever missing, this falls back to
+openWakeWord's pretrained "hey_jarvis" model as a placeholder Hebrew trigger
+(its English meaning is irrelevant, it's just a distinct acoustic trigger).
 """
 from __future__ import annotations
 
@@ -54,6 +55,7 @@ from audio_check.recorder import record_until_silence
 from brain.config import WAKE_WORD_MODEL_PATH
 from brain.llm import STOP_WORDS, BrainError, ask
 from brain.respond import speak_reply, speak_reply_chunks
+from brain.reminders import start as start_reminders
 from brain.stt import TranscriptionError, transcribe
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
@@ -90,7 +92,7 @@ def _wav_duration_seconds(path: Path) -> float:
 # play_wav() returned. See _handle_conversation below.
 ACK_DURATION_SECONDS = _wav_duration_seconds(ACK_WAV)
 ENGLISH_WAKE_WORD = "alexa"
-HEBREW_WAKE_WORD = "hey_jarvis"  # placeholder for the trained "mendy" model -- see _load_wake_word_model below
+HEBREW_WAKE_WORD = "hey_jarvis"  # fallback if models/mendy.onnx is ever missing -- see _load_wake_word_model below
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
 DETECTION_THRESHOLD = 0.6  # Default threshold when music is not playing, to prevent false triggers
@@ -140,14 +142,14 @@ def _load_wake_word_model() -> tuple[Model, dict[str, str]]:
     utterance, since a conversation may switch languages mid-stream.
 
     WAKE_WORD_MODEL_PATH (see brain/config.py) points at a custom-trained
-    Hebrew model (e.g. "Mendy") -- training one requires openWakeWord's own
-    Colab notebook (30,000+ hours of negative audio and a multi-framework
+    Hebrew model -- models/mendy.onnx by default, trained via openWakeWord's
+    own Colab notebook (30,000+ hours of negative audio and a multi-framework
     torch+tensorflow training stack make local training impractical here;
-    see the README's Wake word section for the actual recipe). Until you've
-    trained and pointed at one, HEBREW_WAKE_WORD falls back to the
-    pretrained "hey_jarvis" model as a placeholder Hebrew trigger -- its
-    English meaning is irrelevant, it's just a distinct, reliable acoustic
-    trigger, same role "alexa" plays for English.
+    see the README's Wake word section for the actual recipe). If that file
+    is ever missing, HEBREW_WAKE_WORD falls back to the pretrained
+    "hey_jarvis" model as a placeholder Hebrew trigger -- its English meaning
+    is irrelevant, it's just a distinct, reliable acoustic trigger, same role
+    "alexa" plays for English.
     """
     if WAKE_WORD_MODEL_PATH:
         hebrew_key = Path(WAKE_WORD_MODEL_PATH).stem
@@ -518,6 +520,12 @@ def main() -> None:
 
     # Start the Spotify background poll thread to dynamically adjust wake word sensitivity
     threading.Thread(target=_poll_spotify_status, daemon=True).start()
+
+    # Start the Mendy-calendar reminder poller (see brain/reminders.py) --
+    # needs out_device to speak reminders, and must run in this process since
+    # it acquires the ALERT audio-focus channel (brain/audio_focus.py is
+    # explicitly single-process).
+    start_reminders(out_device)
 
     while True:
         last_trigger, triggered_key = _listen_for_wake_word(model, wake_word_language, in_device, last_trigger)

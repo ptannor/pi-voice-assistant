@@ -56,8 +56,13 @@ HOUSEHOLD_TIMEZONE = _read_pi_config_value("HOUSEHOLD_TIMEZONE") or "Asia/Jerusa
 
 # Path to a custom-trained wake-word model (.onnx/.tflite), e.g. from
 # training "Mendy" via openWakeWord's Colab notebook -- see README's Wake
-# word section. None means fall back to the pretrained "alexa" model.
-WAKE_WORD_MODEL_PATH = _read_pi_config_value("WAKE_WORD_MODEL_PATH")
+# word section. Defaults to the trained model checked into models/mendy.onnx
+# if present; override via .pi-config to point at a different one (or delete
+# models/mendy.onnx to fall back to the pretrained "hey_jarvis" placeholder).
+_DEFAULT_WAKE_WORD_MODEL = Path(__file__).parent.parent / "models" / "mendy.onnx"
+WAKE_WORD_MODEL_PATH = _read_pi_config_value("WAKE_WORD_MODEL_PATH") or (
+    str(_DEFAULT_WAKE_WORD_MODEL) if _DEFAULT_WAKE_WORD_MODEL.exists() else None
+)
 
 # Comma-separated family member names, in each language they'd actually be
 # spoken/read in -- fed to Whisper as a transcription hint (see brain/stt.py)
@@ -87,8 +92,53 @@ SPOTIPY_CLIENT_ID = os.environ.get("SPOTIPY_CLIENT_ID")
 SPOTIPY_CLIENT_SECRET = os.environ.get("SPOTIPY_CLIENT_SECRET")
 SPOTIPY_REDIRECT_URI = os.environ.get("SPOTIPY_REDIRECT_URI")
 
+# Substring to match against a Spotify Connect device's name (see
+# brain/spotify.py's _active_device_id), e.g. "Living Room" or the household's
+# actual speaker's name in the Spotify app. Without this, when no device is
+# currently marked active, playback fell back to whichever device happened to
+# be first in Spotify's own (unspecified, not "most recent"/"nearest") device
+# list -- confirmed: played on a household member's phone instead of the
+# intended speaker. Leave unset to keep that arbitrary-first-device fallback.
+SPOTIFY_DEVICE_NAME = _read_pi_config_value("SPOTIFY_DEVICE_NAME")
+
 # Haiku: fast/cheap, appropriate for short spoken Q&A read aloud by TTS.
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+# Google Calendar (see brain/gcal.py) -- a dedicated secondary calendar for
+# Mendy's reminders, accessed via a service account rather than the
+# spotipy-style interactive OAuth flow: a service account never needs
+# interactive re-auth (no browser, ever, matching this file's non-interactive
+# constraint for anything running inside the daemon), and only sees calendars
+# explicitly shared with it -- narrower access than an OAuth grant on the
+# household's whole Google account. Path to the service account's downloaded
+# JSON key.
+GOOGLE_SERVICE_ACCOUNT_FILE = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+
+# The "Mendy" calendar's id (Google Calendar -> that calendar's Settings ->
+# "Calendar ID", looks like an email address) -- set via .pi-config after
+# creating the calendar and sharing it with the service account's email (see
+# brain/gcal.py's module docstring for the one-time setup steps).
+MENDY_CALENDAR_ID = _read_pi_config_value("MENDY_CALENDAR_ID")
+
+# Telegram bot token from @BotFather (see telegram_bot_daemon.py) -- chosen
+# over WhatsApp for a bot that must run unattended on a home Pi: one token,
+# official long-polling API, no Meta business review, no dedicated phone
+# number.
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+# Comma-separated numeric Telegram chat ids allowed to talk to the bot --
+# checked on every incoming message so a stranger who finds the bot's
+# username gets no tool access at all, not even a stub reply. Get a chat id
+# by messaging the bot once and checking the console log it prints for
+# unrecognized senders, or via @userinfobot.
+_telegram_ids_raw = _read_pi_config_value("TELEGRAM_ALLOWED_CHAT_IDS") or ""
+TELEGRAM_ALLOWED_CHAT_IDS = [s.strip() for s in _telegram_ids_raw.split(",") if s.strip()]
+
+# Minutes of lead time before a calendar event's start to speak its reminder
+# (0 = fire exactly at the event's own time, right for "take antibiotics at
+# 8am"). Override via .pi-config for e.g. appointments where a few minutes'
+# notice is more useful than none.
+REMINDER_LEAD_MINUTES = int(_read_pi_config_value("REMINDER_LEAD_MINUTES") or "0")
 
 # Groq's hosted Whisper -- chosen over OpenAI's own Whisper API (cheaper,
 # faster) and over self-hosting ivrit.ai's Hebrew-tuned models (better Hebrew

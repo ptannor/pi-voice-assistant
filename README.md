@@ -1,10 +1,10 @@
 # pi-voice-assistant
 
 A Raspberry Pi 4 voice assistant. `wake_word_daemon.py` does real free-form
-conversation: "Alexa" (English) or "Hey Jarvis" (Hebrew) triggers a recording
+conversation: "Alexa" (English) or "Mendy" (Hebrew) triggers a recording
 of your question, which goes through an LLM (such as Claude or Gemini) and
 comes back as spoken audio — in whichever of English/Hebrew you actually
-spoke. See [Wake word](#wake-word-alexa--hey-jarvis--talking-to-claude) below.
+spoke. See [Wake word](#wake-word-alexa--mendy--talking-to-claude) below.
 
 > **What's actually been tested:** the full record → save → playback round
 > trip has been verified on the actual target hardware — a **Raspberry Pi 4
@@ -16,7 +16,7 @@ spoke. See [Wake word](#wake-word-alexa--hey-jarvis--talking-to-claude) below.
 > model has been tried, and Bluetooth speaker output hasn't been verified
 > end-to-end yet (see [Bluetooth speaker
 > setup](#bluetooth-speaker-setup)). The [wake
-> word](#wake-word-alexa--hey-jarvis--talking-to-claude)
+> word](#wake-word-alexa--mendy--talking-to-claude)
 > pipeline is verified up to the mic-capture stage (confirmed real audio
 > flows through at the correct format via direct RMS measurement) but actual
 > "Alexa" **detection with a real human voice is not yet confirmed** — a
@@ -41,6 +41,7 @@ spoke. See [Wake word](#wake-word-alexa--hey-jarvis--talking-to-claude) below.
 pi-voice-assistant/
 ├── main.py              # entry point
 ├── wake_word_daemon.py  # always-on: "Alexa" -> record question -> Claude -> spoken reply
+├── telegram_bot_daemon.py  # always-on: Telegram chat -> same Claude brain -> text reply
 ├── audio_check/
 │   ├── config.py        # sample rate, channels, duration, device name hints
 │   ├── devices.py       # enumerate & select input/output devices
@@ -55,6 +56,8 @@ pi-voice-assistant/
 │   ├── tools.py         # tool definitions Claude can call (mostly stubs -- see docstring)
 │   ├── websearch.py     # real web search via Serper.dev, with a same-day cache
 │   ├── memory.py        # long-term household facts/preferences (see Memory section)
+│   ├── gcal.py          # Mendy's calendar -- Google Calendar via a service account
+│   ├── reminders.py     # background poller that speaks calendar reminders aloud, unprompted
 │   └── respond.py       # picks Hebrew/English TTS voice from the reply text, synthesizes it
 ├── hebrew_tts/
 │   ├── nakdan.py         # adds nikud via Dicta's free Nakdan API (rare/traditional text only)
@@ -71,6 +74,7 @@ pi-voice-assistant/
 │   └── shabbat/         # pre-recorded Hebrew entrance/exit/warning announcements
 ├── systemd/
 │   ├── pi-voice-assistant.service        # wake_word_daemon.py (user unit)
+│   ├── pi-telegram-bot.service           # telegram_bot_daemon.py (user unit)
 │   ├── pi-voice-assistant-gate.service   # shabbat/gate.py, one-shot (user unit)
 │   └── pi-voice-assistant-gate.timer     # runs the gate checker every minute
 ├── docs/specs/          # design specs written before implementing risky features
@@ -329,16 +333,17 @@ env -u UV_INDEX uv sync
 (add more `-u` flags for any other `UV_INDEX_*` variables your setup sets),
 then confirm the lockfile only references `pypi.org` before committing.
 
-## Wake word ("Alexa" / "Hey Jarvis") + talking to Claude
+## Wake word ("Alexa" / "Mendy") + talking to Claude
 
 `wake_word_daemon.py` listens continuously for **two** wake words at once:
-**"Alexa"** and **"Hey Jarvis"**. Whichever one you say determines which
-language the *first* turn of that conversation is transcribed in — Alexa for
-English, Hey Jarvis for Hebrew — deterministically, instead of guessing from
-audio alone. Follow-up turns within the same conversation still auto-detect
-language fresh per utterance (so you can switch languages mid-conversation),
-since only the wake word itself is a reliable enough signal to skip that
-detection.
+**"Alexa"** and **"Mendy"** (the custom-trained "Menachem Mendel" model at
+[`models/mendy.onnx`](models/mendy.onnx)). Whichever one you say determines
+which language the *first* turn of that conversation is transcribed in —
+Alexa for English, Mendy for Hebrew — deterministically, instead of guessing
+from audio alone. Follow-up turns within the same conversation still
+auto-detect language fresh per utterance (so you can switch languages
+mid-conversation), since only the wake word itself is a reliable enough
+signal to skip that detection.
 
 This exists because per-utterance English/Hebrew auto-detection alone proved
 unreliable in both directions — confirmed in testing: a quick "מה השעה"
@@ -350,25 +355,41 @@ When either wake word fires: plays a short acknowledgment chime, records ~6
 seconds of your question, transcribes it, sends it to Claude, and speaks the
 reply back — in whichever language you spoke. This uses
 [openWakeWord](https://github.com/dscripka/openWakeWord)'s free, fully
-open-source pretrained "alexa" and "hey_jarvis" models for wake-word
-detection — **no account, no API key, no signup** required for that part,
-unlike Porcupine (the original choice for this proof-of-concept using its
-"jarvis" keyword, until Picovoice discontinued its free tier in June 2026 and
-replaced it with a 7-day trial). "Hey Jarvis" is a placeholder Hebrew trigger
-— its English meaning is irrelevant, it's just a distinct, reliable acoustic
-trigger — until the real custom-trained wake word ("Menachem Mendel" /
-"Mendy") planned for a later milestone replaces it, also via openWakeWord.
+open-source pretrained "alexa" model for English wake-word detection — **no
+account, no API key, no signup** required for that part, unlike Porcupine
+(the original choice for this proof-of-concept using its "jarvis" keyword,
+until Picovoice discontinued its free tier in June 2026 and replaced it with
+a 7-day trial) — alongside the custom "mendy" model for Hebrew.
 
-**Training a custom wake word (e.g. "Mendy"):** not something to do locally
-in this repo's own dev environment -- openWakeWord's pretrained models are
-trained on 30,000+ hours of negative audio (speech/noise/music) to avoid
-false triggers, and the training code needs a multi-GB PyTorch + TensorFlow
-stack (`pip install openwakeword[full]`) neither of which is practical to
-pull into a normal dev machine just to try one word. Do it via openWakeWord's
-own free-GPU Colab notebooks instead (linked from
-[openWakeWord's README](https://github.com/dscripka/openWakeWord)): the
-simple one-click notebook for a quick model, or `automatic_model_training.ipynb`
-for a higher-quality one.
+**Mendy's evaluation** (2,000 held-out positive + 2,000 held-out negative
+clips from its own training Colab, none seen during training, scored at the
+same `DETECTION_THRESHOLD = 0.6` `wake_word_daemon.py` actually uses):
+detects "Mendy" **90.5%** of the time (avg score 0.881), false-triggers on
+unrelated speech **2.9%** of the time (avg score 0.034). For comparison, the
+mature pretrained "alexa" model scored on those same clips: 0% (correctly
+never mistakes "Mendy" for "Alexa") and **0.2%** false-trigger rate on the
+same negative clips — about 14x lower than Mendy's, expected since alexa was
+trained on 30,000+ hours of negative audio versus Mendy's 10,000 training
+clips. These numbers are from synthetic TTS voices in the training pipeline's
+own test split, not real speech through the actual mic — still worth
+confirming against real voices/room acoustics via `wakeword_bench` (below)
+before fully trusting the false-trigger rate day to day.
+
+If `models/mendy.onnx` is ever missing, `wake_word_daemon.py` falls back to
+openWakeWord's pretrained **"hey_jarvis"** model as a placeholder Hebrew
+trigger — its English meaning is irrelevant, it's just a distinct, reliable
+acoustic trigger, same role "alexa" plays for English.
+
+**Training your own wake word:** not something to do locally in this repo's
+own dev environment -- openWakeWord's pretrained models are trained on
+30,000+ hours of negative audio (speech/noise/music) to avoid false triggers,
+and the training code needs a multi-GB PyTorch + TensorFlow stack
+(`pip install openwakeword[full]`) neither of which is practical to pull into
+a normal dev machine just to try one word. Do it via openWakeWord's own
+free-GPU Colab notebooks instead (linked from [openWakeWord's
+README](https://github.com/dscripka/openWakeWord)): the simple one-click
+notebook for a quick model, or `automatic_model_training.ipynb` for a
+higher-quality one.
 
 If you want a **different** wake word than "Mendy" (or just don't want to
 fight the upstream notebook's bitrot), use
@@ -382,18 +403,19 @@ and self-test it before leaving Colab. To target a different word, just
 change `config["target_phrase"] = ["mendy"]` near the top to whatever you
 want. Upload it via Colab's File → Upload notebook.
 
-Either way you'll end up with a `.onnx` file -- drop it anywhere in this repo
-(it's just a model file, no code changes needed) and point at it:
+Either way you'll end up with a `.onnx` file. Replace `models/mendy.onnx`
+with it directly, or point `.pi-config` at a different path/filename if you'd
+rather keep both around:
 ```bash
-# add to .pi-config:
-WAKE_WORD_MODEL_PATH=/path/to/mendy.onnx
+# add to .pi-config to override the default (models/mendy.onnx):
+WAKE_WORD_MODEL_PATH=/path/to/your-model.onnx
 ```
-This replaces "Hey Jarvis" as the Hebrew trigger, still loaded alongside
-"Alexa" for English (see `_load_wake_word_model` in `wake_word_daemon.py`).
-Leave it unset to keep using the pretrained "hey_jarvis" placeholder. Once
-you have a real model, expect to tune `DETECTION_THRESHOLD` in
-`wake_word_daemon.py` against real speech -- a custom model's confidence
-distribution won't necessarily match "alexa"'s or "hey_jarvis"'s.
+(see `brain/config.py`'s `WAKE_WORD_MODEL_PATH`). Delete `models/mendy.onnx`
+entirely (and don't set an override) to fall back to the pretrained
+"hey_jarvis" placeholder instead. Once you have a real model, expect to tune
+`DETECTION_THRESHOLD` in `wake_word_daemon.py` against real speech -- a
+custom model's confidence distribution won't necessarily match "alexa"'s or
+"hey_jarvis"'s.
 
 The conversation itself (`brain/`) does need personal API keys:
 
@@ -549,6 +571,76 @@ voice-driven write tool (right now it's curated by hand, matching how it's
 actually expected to be populated -- as files, not fact-by-fact through
 conversation).
 
+## Mendy's calendar & reminders
+
+A dedicated Google Calendar ("Mendy") for household reminders -- medication
+schedules, appointments, anything recurring or one-time -- editable three
+ways that all stay in sync automatically: the Google Calendar app on any
+phone, by voice ("add antibiotics at 8am and 8pm every day for 10 days"), or
+by messaging the Telegram bot. `brain/reminders.py` polls it in the
+background and speaks each reminder aloud, unprompted, at its start time --
+the calendar analogue of the timer alarm.
+
+**One-time setup -- Google Calendar (service account, no interactive login
+ever):**
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a
+   project, enable the **Google Calendar API**, then create a **service
+   account** and download its JSON key.
+2. In Google Calendar's web UI, create a new secondary calendar named
+   "Mendy". Under that calendar's **Settings → Share with specific people**,
+   add the service account's email (from the JSON key file,
+   `...@...iam.gserviceaccount.com`) with **"Make changes to events"**
+   permission.
+3. Copy that calendar's id (**Settings → Integrate calendar → Calendar ID**,
+   looks like an email address) into `.pi-config`, and the JSON key's path
+   into `.env`:
+
+```bash
+# add to .pi-config:
+MENDY_CALENDAR_ID=<calendar id>
+
+# add to .env:
+GOOGLE_SERVICE_ACCOUNT_FILE=/home/<PI_USER>/<PI_DIR>/.gcal-service-account.json
+```
+
+Place the downloaded key at that path (gitignored -- never commit it), then
+verify access:
+
+```bash
+uv run python -m brain.gcal
+```
+
+**One-time setup -- Telegram bot:**
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, `/newbot`, and
+   copy the token it gives you into `.env` as `TELEGRAM_BOT_TOKEN`.
+2. Message your new bot once from each phone that should be allowed to use
+   it, then find each chat's numeric id (e.g. via
+   [@userinfobot](https://t.me/userinfobot)) and add them to `.pi-config`:
+
+```bash
+# add to .pi-config:
+TELEGRAM_ALLOWED_CHAT_IDS=111111111,222222222
+```
+
+Anyone not on that list gets a refusal and no tool access at all -- see
+`telegram_bot_daemon.py`.
+
+**Install the Telegram bot as a background service** (same user-level-unit
+reasoning as `pi-voice-assistant.service` below, though this one doesn't
+touch audio):
+
+```bash
+cp systemd/pi-telegram-bot.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now pi-telegram-bot
+```
+
+Reminders fire from inside `wake_word_daemon.py` itself (see
+`brain/reminders.py`'s module docstring for why it can't run as a separate
+process) -- no extra service to install for that part.
+
 ## Running as a background service
 
 `systemd/pi-voice-assistant.service` runs `wake_word_daemon.py` persistently
@@ -580,7 +672,7 @@ SSH session, so the same PATH issue described above applies here too, just
 with no shell to add a workaround line to.
 
 This service does need `.env` (see [Wake
-word](#wake-word-alexa--hey-jarvis--talking-to-claude)
+word](#wake-word-alexa--mendy--talking-to-claude)
 above) — `WorkingDirectory` is set to the repo root, so `python-dotenv` finds
 it there automatically, same as running it manually. `.env` is gitignored, so
 `git pull`/`update-pi.sh` never touches it — create it directly on the Pi
@@ -617,6 +709,12 @@ compromise the other. It:
 - Plays spoken warnings at 15/10/5 minutes before candle-lighting, plus
   distinct entrance/exit announcements — with separate Hebrew wording for
   Shabbat vs. Yom Tov (see the spec for why that distinction matters).
+- Right after the entrance/exit announcement, also speaks a dynamic digest of
+  any [Mendy calendar](#mendys-calendar--reminders) reminders due during that
+  Shabbat/Yom Tov window — a heads-up before candle-lighting, a catch-up
+  right after havdalah — since medication schedules don't pause just because
+  the device is gated off. Best-effort: a calendar/network failure here is
+  swallowed and never affects gating itself.
 - **Fails closed on any uncertainty**: if the system clock isn't confirmed
   NTP-synced, or the cached zmanim data is missing/stale beyond 30 days, it
   gates the device *off* rather than risk operating during Shabbat.
@@ -659,14 +757,19 @@ uv run python -m shabbat.gate
 
 ## Roadmap (not in this milestone)
 
-- Custom-trained wake words ("Menachem Mendel" / "Mendy" via openWakeWord) —
-  `wake_word_daemon.py`'s "Hey Jarvis" is a pretrained placeholder Hebrew
-  trigger, not the real thing; swap it in via `WAKE_WORD_MODEL_PATH` once trained
+- ~~Custom-trained wake word ("Menachem Mendel" / "Mendy" via
+  openWakeWord)~~ Done — `models/mendy.onnx` is trained and wired in as the
+  default Hebrew trigger, replacing the "hey_jarvis" placeholder (which is
+  now only a fallback if that file is ever missing). Evaluated against 2,000
+  held-out synthetic clips (90.5% detection, 2.9% false-trigger rate — see
+  [Wake word](#wake-word-alexa--mendy--talking-to-claude)); still needs a
+  live `wakeword_bench` run against real voices/room acoustics for full
+  confidence
 - Confirm the full Claude conversation loop end-to-end on real hardware once
-  a working Pi is available again (see [Wake word](#wake-word-alexa--hey-jarvis--talking-to-claude))
-- ~~Evaluate dual wake words...~~ Done — "Alexa"/"Hey Jarvis" now determine
+  a working Pi is available again (see [Wake word](#wake-word-alexa--mendy--talking-to-claude))
+- ~~Evaluate dual wake words...~~ Done — "Alexa"/"Mendy" now determine
   turn-1 language deterministically (see [Wake
-  word](#wake-word-alexa--hey-jarvis--talking-to-claude)). Confirmed on this
+  word](#wake-word-alexa--mendy--talking-to-claude)). Confirmed on this
   dev Mac that a single `Model(wakeword_models=[...])` instance runs both
   wake words off one shared embedding/melspectrogram pass (only the small
   final classifier head runs per-model, not the whole pipeline), so this is
