@@ -67,6 +67,13 @@ CRITICAL_MAX_NAG_SECONDS = 2 * 60 * 60
 STATE_PATH = Path(__file__).parent.parent / "logs" / "reminders_fired.json"
 CHIME_WAV = Path(__file__).parent.parent / "assets" / "chime.wav"
 
+# Matches the recurring "הלכה יומית" calendar event (see brain/halacha.py's
+# module docstring and the README's Daily halacha section for the one-time
+# `add_calendar_event` setup) -- when a reminder with this in its title
+# fires, speak a real teaching instead of just announcing the event's own
+# title like any other reminder.
+HALACHA_TITLE_KEYWORD = "הלכה"
+
 _lead = timedelta(minutes=REMINDER_LEAD_MINUTES)
 
 # item_id -> calendar item, for critical reminders currently ringing/nagging.
@@ -219,10 +226,65 @@ def _fire_critical(item: dict, item_id: str, text: str, out_device: Device) -> N
     focus.release(Channel.ALERT)
 
 
+def _halacha_text(title: str) -> str | None:
+    """Real daily halacha teaching if `title` is the recurring halacha
+    reminder (see HALACHA_TITLE_KEYWORD), else None to fall back to the
+    generic "Reminder: {title}" line. Best-effort: a search/API failure
+    falls back to the generic line too rather than raising -- this runs
+    unattended in a background thread, not a conversation Claude can recover
+    from."""
+    if HALACHA_TITLE_KEYWORD not in title:
+        return None
+    from . import halacha
+
+    result = halacha.get_daily_halacha_text("he")
+    prefix = "status: ok, text: "
+    if result.startswith(prefix):
+        return result[len(prefix):]
+    print(f"Daily halacha fetch failed ({result}), falling back to generic reminder text", flush=True)
+    return None
+
+
+def _speak_halacha_audio(episode: dict, out_device: Device) -> None:
+    """Plays a real recorded halacha episode (see brain/halacha.py's
+    pick_short_halacha_episode) instead of TTS. Holds ALERT for the
+    episode's actual duration -- spotify.play() only starts playback, it
+    doesn't block until the clip ends -- plus a short buffer, so a
+    lower-priority sound can't sneak back in before it's actually done."""
+    from . import spotify
+
+    focus.acquire(Channel.ALERT)
+    try:
+        try:
+            play_wav(CHIME_WAV, out_device)
+        except Exception:
+            pass
+        spotify.play(episode["uri"])
+        time.sleep(episode["duration_s"] + 2)
+    finally:
+        focus.release(Channel.ALERT)
+
+
 def _fire(item: dict, out_device: Device) -> None:
     title = item.get("summary", "Reminder")
-    text = f"תזכורת: {title}" if _is_hebrew(title) else f"Reminder: {title}"
     item_id = item.get("id")
+
+    if HALACHA_TITLE_KEYWORD in title:
+        print(f"Daily halacha reminder firing: {title}", flush=True)
+        from . import halacha
+
+        episode = halacha.pick_short_halacha_episode()
+        if episode:
+            try:
+                _speak_halacha_audio(episode, out_device)
+                _push_telegram(f"הלכה יומית: {episode['name']}")
+                return
+            except Exception as exc:
+                print(f"Halacha audio playback failed ({exc}), falling back to TTS", flush=True)
+        # No audio found, or playback failed -- fall through to the
+        # TTS-composed teaching below, same as any other reminder.
+
+    text = _halacha_text(title) or (f"תזכורת: {title}" if _is_hebrew(title) else f"Reminder: {title}")
 
     if item_id and _is_critical(item):
         print(f"Critical reminder firing: {title}", flush=True)

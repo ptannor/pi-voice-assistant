@@ -89,3 +89,34 @@ def scheduled_events(
 
 def is_gated(windows: list[GateWindow], now: datetime) -> bool:
     return any(w.start <= now < w.end for w in windows)
+
+
+_HE_WEEKDAYS = ("יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת", "יום ראשון")
+_EN_WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def concise_times_text(windows: list[GateWindow], now: datetime, language: str = "he") -> str:
+    """Short, TTS-ready candle-lighting/havdalah times for the current (if
+    `now` falls inside one) or next upcoming window -- same Shabbat/Yom Tov
+    wording distinction as the gate's own spoken announcements (see
+    docs/specs/shabbat-gating.md's Timeline), so this reads the same way
+    Mendy already talks about Shabbat elsewhere. Returns a short status
+    string, same convention as brain/spotify.py.
+    """
+    upcoming = next((w for w in windows if w.end > now), None)
+    if upcoming is None:
+        return "status: error_not_found"
+
+    start_time = upcoming.start.strftime("%H:%M")
+    end_time = upcoming.end.strftime("%H:%M")
+
+    if language == "he":
+        occasion = "החג" if upcoming.is_yomtov else "השבת"
+        day = _HE_WEEKDAYS[upcoming.start.weekday()]
+        text = f"כניסת {occasion} ב{day} בשעה {start_time}, צאת {occasion} בשעה {end_time}"
+    else:
+        occasion = "the holiday" if upcoming.is_yomtov else "Shabbat"
+        day = _EN_WEEKDAYS[upcoming.start.weekday()]
+        text = f"{occasion} begins {day} at {start_time} and ends at {end_time}"
+
+    return f"status: ok, text: {text}"

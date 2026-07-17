@@ -19,7 +19,7 @@ for it and TOOLS is sent to the API as-is.
 """
 from __future__ import annotations
 
-from . import gcal, memory, spotify, timer
+from . import gcal, halacha, memory, spotify, timer
 from .calculator import calculate
 from .language import LANGUAGE_NAMES
 from .mode import set_funny_voice
@@ -581,6 +581,31 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
             return gcal.cancel_events(query=tool_input["query"])
         except gcal.CalendarError as exc:
             return f"status: error_calendar_failed, details: {exc}"
+
+    if name == "get_daily_halacha":
+        episode = halacha.pick_short_halacha_episode()
+        if episode:
+            try:
+                spotify.play(episode["uri"])
+                return f"status: playing, track: {episode['name']}, artist: הלכה יומית"
+            except spotify.SpotifyError:
+                pass  # fall through to the TTS-composed teaching below
+        return halacha.get_daily_halacha_text(language)
+
+    if name == "get_zmanim":
+        from datetime import datetime
+
+        from shabbat.config import load_config
+        from shabbat.hebcal_client import get_data
+        from shabbat.schedule import build_windows, concise_times_text
+
+        config = load_config()
+        items, status = get_data(config)
+        if items is None:
+            return "status: error_zmanim_unavailable"
+        windows = build_windows(items)
+        now = datetime.now().astimezone()
+        return concise_times_text(windows, now, language)
 
     if name == "tell_joke_hebrew":
         import random

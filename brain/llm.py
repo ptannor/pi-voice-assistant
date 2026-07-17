@@ -375,7 +375,10 @@ def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]], 
 
     # Get the last tool stage name
     last_tool = tool_stages[-1].replace("tool:", "")
-    if "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool or "stop_music" in last_tool:
+    if "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool or "stop_music" in last_tool or "get_daily_halacha" in last_tool:
+        # get_daily_halacha shares this path when it played a real recording
+        # (see brain/tools.py) -- "status: playing" there too, same silent-
+        # on-success / speak-on-error convention as the music tools.
         return _playback_fallback_reply(language, last_tool_result)
     if "calendar" in last_tool:
         return _calendar_fallback_reply(language, last_tool_result)
@@ -550,7 +553,7 @@ def ask(
         last_tool = tool_stages[-1].replace("tool:", "")
         if "stop" in last_tool or "cancel" in last_tool:
             reply = ""
-        elif "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool or "stop_music" in last_tool:
+        elif "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool or "stop_music" in last_tool or "get_daily_halacha" in last_tool:
             # If the playback tool successfully played, resumed, seeked, skipped, or stopped, force the response to be completely silent
             is_silent_success = False
             for msg in reversed(messages):
