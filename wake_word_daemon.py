@@ -521,12 +521,12 @@ def main() -> None:
         out_device = find_output_device(cfg.output_name_hint)
         
         global DETECTION_THRESHOLD
-        if "respeaker" in in_device.name.lower():
-            DETECTION_THRESHOLD = 0.45
-            print(f"reSpeaker detected: adjusting default wake-word detection threshold to {DETECTION_THRESHOLD}", flush=True)
-        else:
+        if "macbook pro microphone" in in_device.name.lower():
             DETECTION_THRESHOLD = 0.6
-            print(f"Standard mic detected: setting default wake-word detection threshold to {DETECTION_THRESHOLD}", flush=True)
+            print(f"MacBook built-in mic detected: setting default wake-word detection threshold to {DETECTION_THRESHOLD}", flush=True)
+        else:
+            DETECTION_THRESHOLD = 0.45
+            print(f"External/USB mic detected ({in_device.name}): adjusting default wake-word detection threshold to {DETECTION_THRESHOLD}", flush=True)
     except AudioCheckError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         mic_leds.enter_error()
