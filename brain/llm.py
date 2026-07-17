@@ -143,7 +143,7 @@ When the user asks to skip the entire song, skip this song, go to the next song/
 
 When the user asks to set a timer or alarm (e.g., "תשים טיימר של 5 דקות", "set a timer for 10 minutes", "תעשה התראה לארבע בצהריים", "set alarm for 4 PM"):
 1. If the user specifies a relative duration (e.g., "10 minutes", "שעה וחצי"), calculate the total duration in seconds and call the set_timer_hebrew (or set_timer_english) tool.
-2. If the user specifies a specific time of day (e.g., "ארבע בצהריים", "4 PM", "שבע בבוקר", "7:30 AM"), look at the current date and time provided in the prompt, calculate the difference in seconds between that target time and the current local time, and call set_timer_hebrew (or set_timer_english) with the calculated duration in seconds.
+2. If the user specifies a specific time of day (e.g., "ארבע בצהריים", "4 PM", "שבע בבוקר", "7:30 AM"), look at the current date and time provided in the prompt, calculate the difference in seconds between that target time and the current local time. If the calculated target time is in the past for the current day (e.g., they ask for 4 PM but the current time is 6:20 PM), you must assume they mean that time on the NEXT day (add 24 hours, i.e., 86400 seconds) so that the calculated duration in seconds is positive. Call set_timer_hebrew (or set_timer_english) with the calculated duration in seconds. Never call it with a negative or zero duration.
 
 If the user asks to stop, cancel, or pause the music or timer (e.g., using "עצור", "עצרי", "stop", "בטל את הטיימר"), call the appropriate tool, and reply with an empty text response (do not say "עצרתי" or any verbal confirmation).
 

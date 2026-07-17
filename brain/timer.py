@@ -21,6 +21,9 @@ def set_timer(duration_seconds: int) -> str:
     """
     global _active_timer_thread, _stop_event
 
+    if duration_seconds <= 0:
+        return "שגיאה: משך זמן הטיימר חייב להיות גדול מאפס."
+
     # If a timer is already running, cancel it first
     cancel_timer()
 
