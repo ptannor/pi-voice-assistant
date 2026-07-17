@@ -81,6 +81,17 @@ def _do_record(device: Device, frames: int, sample_rate: int, channels: int) -> 
 # Device/room dependent -- may need retuning for a different mic (e.g. the Pi's).
 SILENCE_RMS_THRESHOLD = 250.0
 CHUNK_SAMPLES = 1600  # 100ms at 16kHz
+# A single loud 100ms chunk isn't necessarily the user talking again -- could
+# be one syllable of background chatter, a clink, a door. Require a run this
+# long over threshold before treating it as renewed speech that resets the
+# silence countdown below; a brief blip shorter than this is just ignored
+# (still recorded, just doesn't interrupt the countdown toward ending the
+# turn). Confirmed needed: in a noisy room, background conversation kept
+# resetting the countdown on every interjection, so a short command ("stop",
+# "play X") never hit its silence cutoff and dragged in unrelated speech
+# recorded well past it. 0.3s is well under a real spoken syllable/word but
+# comfortably longer than an isolated one-chunk noise spike.
+MIN_SPEECH_RUN_SECONDS = 0.3
 
 
 def record_until_silence(
@@ -125,6 +136,8 @@ def record_until_silence(
     elapsed = 0.0
     lead_in_elapsed = 0.0
     chunk_duration = CHUNK_SAMPLES / sample_rate
+    consecutive_loud_chunks = 0
+    min_speech_run_chunks = max(1, round(MIN_SPEECH_RUN_SECONDS / chunk_duration))
 
     with sd.InputStream(
         device=device.index,
@@ -146,13 +159,20 @@ def record_until_silence(
             elapsed += chunk_duration
             rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
 
-            if rms > SILENCE_RMS_THRESHOLD:
+            consecutive_loud_chunks = consecutive_loud_chunks + 1 if rms > SILENCE_RMS_THRESHOLD else 0
+
+            if consecutive_loud_chunks >= min_speech_run_chunks:
+                # A sustained run over threshold -- this is really speech (the
+                # user talking again), not an isolated background blip. Reset
+                # the silence countdown.
                 if not speech_started and lead_in_buffer:
                     chunks.extend(lead_in_buffer)
                     lead_in_buffer = []
                 speech_started = True
                 silence_elapsed = 0.0
             elif speech_started:
+                # Either true quiet, or a loud blip too brief to count as
+                # renewed speech -- both count toward ending this turn.
                 silence_elapsed += chunk_duration
 
             if speech_started:
