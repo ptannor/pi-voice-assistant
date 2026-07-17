@@ -24,9 +24,11 @@ you actually spoke. See [Wake word](#wake-word-alexa) below.
 ## Hardware
 
 - Raspberry Pi 4 Model B
-- A USB microphone — defaults to matching **HyperX QuadCast S** by name
-  (`audio_check/config.py` → `input_name_hint`), but any generic USB
-  microphone works; change the hint or pass `--device-hint` for a different one
+- A USB microphone — prefers the **reSpeaker XVF3800 4-Mic Array** by name
+  when it's plugged in, otherwise falls back to the **HyperX QuadCast S**
+  (`audio_check/config.py` → `input_name_hint`, tried in order); any generic
+  USB microphone works too, change the hint(s) or pass `--device-hint` for a
+  different one
 - A speaker — wired (3.5mm/USB/HDMI) or a generic Bluetooth speaker. Bluetooth
   speakers need pairing first — see [Bluetooth speaker
   setup](#bluetooth-speaker-setup)

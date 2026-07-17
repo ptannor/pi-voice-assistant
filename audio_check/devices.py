@@ -89,7 +89,7 @@ def _default_indices() -> tuple[int | None, int | None]:
     return default_in, default_out
 
 
-def find_input_device(name_hint: str | None) -> Device:
+def find_input_device(name_hint: str | tuple[str, ...] | None) -> Device:
     devices = [d for d in list_devices() if d.is_input]
     if not devices:
         raise NoInputDeviceFound(
@@ -97,17 +97,20 @@ def find_input_device(name_hint: str | None) -> Device:
             "connection and run 'arecord -l' on the Pi to confirm the OS sees it."
         )
 
-    if name_hint:
-        matches = [d for d in devices if name_hint.lower() in d.name.lower()]
+    hints = (name_hint,) if isinstance(name_hint, str) else tuple(name_hint or ())
+    for hint in hints:
+        matches = [d for d in devices if hint.lower() in d.name.lower()]
         if matches:
             return matches[0]
+
+    if hints:
         # Fall back to the default device rather than hard-failing: some contexts
         # (e.g. a systemd --user service, whose cgroup PipeWire's access control
         # treats differently than an interactive login session) only expose the
         # generic "pulse"/"default" passthrough, not named hardware devices, even
         # though that passthrough correctly routes to the same physical hardware.
         print(
-            f"Warning: no input device matching '{name_hint}' found (saw: "
+            f"Warning: no input device matching any of {hints} found (saw: "
             f"{', '.join(d.name for d in devices)}) -- falling back to the "
             "system default input.",
         )
