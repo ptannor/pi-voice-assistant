@@ -18,7 +18,7 @@ from .config import (
     HOUSEHOLD_NEARBY_AREAS,
     HOUSEHOLD_TIMEZONE,
 )
-from .language import LANGUAGE_NAMES
+from .language import LANGUAGE_NAMES, detect_language
 from .memory import memory_prompt_block
 from .mode import is_funny_voice_enabled
 from .tools import execute_tool, get_tools_for_language
@@ -108,6 +108,8 @@ Always reply in the same language the user just spoke to you in: if they spoke E
 
 Music playback and the countdown timer (play/search/stop/seek_music, skip_track, set/cancel_timer) each come as a Hebrew-named and an English-named tool pair (e.g. set_timer_hebrew vs. set_timer_english) purely so the right one is offered for whichever language you're replying in this turn -- they are NOT separate capabilities or separate state. A timer or song started via one language's tool is exactly as real, and exactly as controllable, as if started via the other's, even in a later turn where you're now replying in the other language and only see that other language's tool names. Never say you "don't have" a timer/music feature in one language, or that something only "really" happened in the other language -- if history shows you already set a timer or started a song, it's active regardless of which tool name did it.
 
+If asked whether you work on Shabbat/Yom Tov, or what happens to you then: yes, you actually do stop -- a separate mechanism outside this conversation shuts you down entirely from candle-lighting until havdalah, and starts you back up right after. Say so plainly if asked, instead of guessing; don't claim you're available every day.
+
 Use the available tools for anything they cover. Don't claim to have done
 something physical/real-world, or given specific factual info you don't
 actually have, unless a tool result actually states that exact detail --
@@ -131,7 +133,11 @@ When the user asks to play a song, podcast, show, or episode (e.g., using "תנ�
    - If there is a single outstanding match, call play_music_hebrew (or play_music_english) immediately with that item's URI.
    - If there are two or three prominent/equally likely candidates, stop and ask the user a very brief clarification question listing the 2 or 3 options using the minimum number of words possible (e.g., in Hebrew: "הפודקאסט של שיר אחד או של חיות כיס?").
    - Once they clarify, call play_music_hebrew (or play_music_english) with the correct item's URI.
-Never ask for clarification if there is a clear winner; keep the flow fast and immediate. If a search fails or no matching songs/shows are found, explain this briefly in the user's language (e.g., in Hebrew, never in English). If a music playback tool returns "status: error_no_active_device", tell the user in Hebrew that they need to open Spotify on a device first before you can play music (e.g., "פתח בבקשה את ספוטיפיי במכשיר כלשהו תחילה").
+4. If none of the candidates look like a real match for what was said, do NOT immediately give up and ask the user to confirm the title -- STT garbling is expected and common, and most music requests are for a mainstream, well-known song. First retry the search once with a shorter, simplified query: just the artist name, or just whichever single word sounded most like a real song title (in Hebrew, the actual title is often the last distinct word/phrase in a garbled multi-word request). If that retry surfaces a well-known song by the artist the user named -- even if it doesn't share every word with what was transcribed -- treat it as the answer and play it directly; don't ask for confirmation just because the transcription didn't match exactly. The cost of stalling the conversation to ask "are you sure of the name?" is much higher than the cost of playing the artist's most popular/likely song and letting the user correct you if it's wrong.
+Never ask for clarification if there is a clear winner; keep the flow fast and immediate. Only after the retry in step 4 still turns up nothing recognizable should you fall back to explaining briefly, in the user's language (e.g., in Hebrew, never in English), that you couldn't find it. Any Spotify tool result starting with "status: error_" describes exactly what went wrong -- match your explanation to it, don't guess or invent an unrelated reason:
+- "error_no_active_device": tell the user they need to open Spotify on a device first before you can play music (e.g., in Hebrew: "פתח בבקשה את ספוטיפיי במכשיר כלשהו תחילה").
+- "error_search_failed" or any status whose "details:" mentions Spotify not being authorized/logged in on this machine: tell the user Spotify isn't set up on this device yet and someone needs to complete the one-time login (e.g., in Hebrew: "ספוטיפיי עדיין לא מחובר במכשיר הזה, מישהו צריך להתחבר קודם"). Never read the raw "details:" text aloud -- it's an internal error message, not something meant for the user.
+- Any other "status: error_*" (error_not_found, error_no_query, error_not_playing, error_playback_failed, error_seek_failed, error_skip_failed, error_stop_failed): briefly say the action didn't work, in the user's language, without fabricating a specific cause you weren't actually given.
 
 When the user asks to resume, resume playing, or continue playing paused music (e.g., using "תמשיך", "להמשיך", "resume", "continue", "play"), call play_music_hebrew (or play_music_english) with the query "resume" to continue the track from where it was paused.
 
@@ -159,6 +165,25 @@ birthdays, school/activity schedules, and more) too big to keep in context by
 default -- use the search_household_info tool to look something up from it
 whenever a question sounds like it could be answered from that kind of
 detail, rather than assuming you don't have it.
+
+Mendy's calendar holds reminders -- medication schedules, appointments, or
+any other recurring or one-time obligation. When someone mentions something
+that sounds like it belongs there (e.g. "I just started antibiotics, 8am and
+8pm every day for 10 days"), extract: a short title, the start date (resolve
+relative dates like "today"/"tomorrow" against the current date/time given
+below), every time of day mentioned (pass them all in one add_calendar_event
+call, not separate calls -- that's what links "8am and 8pm" as one
+reminder), whether/how it repeats, and how it ends (a count of occurrences,
+or an end date). If the time(s) or the end condition are missing or
+ambiguous, ask exactly one brief clarifying question rather than guessing
+(e.g. "מה השעות?" or "לכמה זמן?") -- don't create a vague or wrong reminder.
+After creating one, confirm briefly (e.g. "רשמתי, תזכורת לאנטיביוטיקה בשמונה
+בבוקר ובערב, לעשרה ימים" / "Got it -- antibiotics at 8am and 8pm, for 10
+days"). Use list_calendar_events for "what's on the calendar"/"what
+reminders are there" and cancel_calendar_event when asked to cancel or
+remove one. These are spoken aloud on this device at the time they're due --
+say so if it's relevant context (e.g. if asked how reminders work), but
+don't over-explain on every single add.
 
 If a web_search only gets you a partial answer (e.g. a list of movies but not
 showtimes), don't tell the user to go check a website or app themselves --
@@ -188,6 +213,13 @@ CRITICAL: If the user addresses you in Hebrew (e.g. they speak Hebrew or write i
 _MAX_TOOL_ROUNDS = 4  # safety cap against a runaway tool-call loop -- a real
 # answer sometimes needs 2-3 searches (broad query, then a more specific
 # retry), so this leaves a bit of headroom before the round-cap fallback below
+
+# Shared with wake_word_daemon.py's said_stop check -- one source of truth for
+# what counts as a "stop" utterance. Includes the imperative/infinitive forms
+# Hebrew speakers actually use ("תפסיק"/"תפסיקי"/"להפסיק"), not just the more
+# literal "עצור"/"עצרי" -- confirmed a real gap: a user saying "תפסיק" got no
+# recognition at all before these were added.
+STOP_WORDS = ("עצור", "עצרי", "תעצור", "תעצרי", "תפסיק", "תפסיקי", "להפסיק", "סטופ", "stop")
 
 # Reused across calls instead of constructing a fresh client (and its TLS
 # handshake) on every single turn.
@@ -318,6 +350,21 @@ def _playback_fallback_reply(language: str, result: str | None) -> str:
     return ""  # confirmed success -- stay silent as requested
 
 
+def _calendar_fallback_reply(language: str, result: str | None) -> str:
+    # Same reasoning as _playback_fallback_reply: only runs when Claude
+    # generated no text at all this turn, so an error status must not fall
+    # through to a generic "Done." that claims success it didn't have.
+    if result is None:
+        return "משהו השתבש, לא הצלחתי לבצע את זה." if language == "he" else "Something went wrong -- I couldn't do that."
+    if "status: error_calendar_failed" in result:
+        return "לא הצלחתי להתחבר ליומן כרגע, סליחה." if language == "he" else "I couldn't reach the calendar right now, sorry."
+    if "status: error_not_found" in result or "status: error_no_query" in result or "status: error_no_times" in result:
+        return "לא הבנתי בדיוק למה להתכוון, אפשר לחזור על זה?" if language == "he" else "I didn't quite catch that -- can you say it again?"
+    if "status: empty" in result:
+        return "אין תזכורות קרובות." if language == "he" else "There's nothing coming up."
+    return "בוצע." if language == "he" else "Done."
+
+
 def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]], last_tool_result: str | None) -> str:
     # Find if any tool was executed in this turn
     tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
@@ -328,6 +375,8 @@ def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]], 
     last_tool = tool_stages[-1].replace("tool:", "")
     if "play_music" in last_tool or "seek_music" in last_tool or "skip_track" in last_tool or "stop_music" in last_tool:
         return _playback_fallback_reply(language, last_tool_result)
+    if "calendar" in last_tool:
+        return _calendar_fallback_reply(language, last_tool_result)
     if "stop" in last_tool or "cancel" in last_tool:
         return ""
     elif "set_timer" in last_tool:
@@ -446,6 +495,43 @@ def ask(
     if not reply:
         reply = _get_empty_reply_fallback(language, timeline, _last_tool_result_str(messages))
 
+    # Defensive correction: Claude occasionally ignores the "always reply in
+    # the user's language" system-prompt instruction anyway -- confirmed: an
+    # unusual meta/identity question in Hebrew got an English reply despite
+    # the whole conversation being Hebrew-locked. detect_language() is
+    # reliable here (unlike on transcribed audio) since Claude's own
+    # generated text is never transliterated gibberish -- see
+    # brain/language.py's docstring. One bounded retry, on a throwaway copy
+    # of the message list so the correction round-trip itself never pollutes
+    # the real history returned to the caller; if a stronger one-line
+    # instruction doesn't fix it, looping again isn't likely to either, so
+    # this falls back to the original (wrong-language) reply rather than
+    # failing the whole turn.
+    if reply and detect_language(reply) != language:
+        retry_messages = messages + [
+            {"role": "assistant", "content": response.content},
+            {
+                "role": "user",
+                "content": f"That reply must be in {language_name}, not the language you just used. Say the same thing again, in {language_name} only.",
+            },
+        ]
+        try:
+            retry_response = _timed(
+                "claude_language_retry",
+                client.messages.create,
+                model=CLAUDE_MODEL,
+                max_tokens=300,
+                system=system_prompt,
+                tools=lang_tools,
+                tool_choice={"type": "none"},
+                messages=retry_messages,
+            )
+            retried_reply = "".join(block.text for block in retry_response.content if block.type == "text").strip()
+            if retried_reply:
+                reply = retried_reply
+        except Exception:
+            pass
+
     # Force silent replies for stop/cancel/play tools as requested by user ("you don't need to say עצרתי" or "בוצע")
     tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
     if tool_stages:
@@ -473,6 +559,12 @@ def ask(
                 if (clean_reply in ("בוצע", "עצרתי", "done", "stopped", "resumed", "resuming", "music resumed", "ממשיך", "ממשיך לנגן") or
                     any(w in clean_reply for w in ("seeked", "skipped", "דילגתי", "חזרתי", "לדלג"))):
                     reply = ""
+
+    # A bare "stop" must never get a spoken reply, even when there was
+    # nothing to stop (no tool ended up being called) -- the user never
+    # wants an acknowledgment like "Okay!" for this word, only the action.
+    if any(w in user_text.lower() for w in STOP_WORDS):
+        reply = ""
 
     reply = _strip_voice_unfriendly_formatting(reply)
     messages.append({"role": "assistant", "content": response.content})
