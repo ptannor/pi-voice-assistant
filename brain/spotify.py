@@ -26,7 +26,12 @@ import sys
 import time
 from pathlib import Path
 
-from .config import SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, SPOTIPY_REDIRECT_URI
+from .config import (
+    SPOTIFY_DEVICE_NAME,
+    SPOTIPY_CLIENT_ID,
+    SPOTIPY_CLIENT_SECRET,
+    SPOTIPY_REDIRECT_URI,
+)
 
 # Minimum scopes to search, see available devices, and start/pause playback.
 _SCOPE = "user-read-playback-state user-modify-playback-state"
@@ -80,6 +85,20 @@ def _get_client():
     except ImportError as exc:
         raise SpotifyError("spotipy not installed -- run `uv sync`") from exc
 
+    # spotipy logs every non-2xx response as an ERROR before raising (e.g.
+    # "HTTP Error for PUT .../pause ... returned 403 due to Player command
+    # failed: Restriction violated") -- noisy on literally every conversation
+    # turn that doesn't involve music, since stop()/pause_playback() is called
+    # unconditionally on every wake word (see audio_focus.py's _pause_spotify,
+    # which deliberately doesn't gate this on is_playing() -- that check lags
+    # behind reality right when it matters most, see its own comment). Our
+    # code already classifies this exact case as a non-error (stop() maps it
+    # to "status: stopped"), so spotipy's own duplicate print is pure noise
+    # that was burying real errors in the console; only its own internal
+    # pre-emptive log is silenced here, not our error handling/messages.
+    import logging
+    logging.getLogger("spotipy.client").setLevel(logging.CRITICAL)
+
     auth = _make_auth(open_browser=False)
     # A cached-but-expired token is fine -- spotipy refreshes it silently via
     # the refresh token on the next API call. Only a *missing* token would
@@ -116,13 +135,27 @@ def _local_spotify_running() -> bool:
 
 
 def _active_device_id(sp) -> str | None:
-    """Prefer the currently-active device; fall back to any available one."""
+    """Prefer the currently-active device; then SPOTIFY_DEVICE_NAME (see
+    config.py) if configured; only then fall back to an arbitrary one.
+
+    That last fallback used to be the default when nothing was active --
+    confirmed broken: Spotify's device list order isn't "most recent" or
+    "nearest", so this silently played on whichever device happened to sort
+    first (once, a household member's phone instead of the intended
+    speaker). SPOTIFY_DEVICE_NAME gives a real fallback signal instead of
+    picking blind; only when that's unset (or doesn't match anything
+    currently registered) does this fall back to the old arbitrary pick.
+    """
     devices = sp.devices().get("devices", [])
     if not devices:
         return None
     for device in devices:
         if device.get("is_active"):
             return device["id"]
+    if SPOTIFY_DEVICE_NAME:
+        for device in devices:
+            if SPOTIFY_DEVICE_NAME.lower() in device.get("name", "").lower():
+                return device["id"]
     return devices[0]["id"]
 
 
@@ -706,4 +739,17 @@ if __name__ == "__main__":
         print("Authorized. Available Spotify devices:")
         for _d in _devices:
             _active = " [active]" if _d.get("is_active") else ""
-            print(f"  - {_d['name']} ({_d['type']}){_active}")
+            _matches_configured = (
+                " [SPOTIFY_DEVICE_NAME match]"
+                if SPOTIFY_DEVICE_NAME and SPOTIFY_DEVICE_NAME.lower() in _d["name"].lower()
+                else ""
+            )
+            print(f"  - {_d['name']} ({_d['type']}){_active}{_matches_configured}")
+        if not SPOTIFY_DEVICE_NAME:
+            print(
+                "\nNo SPOTIFY_DEVICE_NAME set -- if none of the above is ever "
+                "'[active]' when you ask to play music, playback falls back to "
+                "an arbitrary device from this list. Add e.g. "
+                f"SPOTIFY_DEVICE_NAME={_devices[0]['name']!r} to .pi-config to "
+                "pick one deliberately instead."
+            )
