@@ -9,6 +9,8 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 
+STOP_WORDS = ["עצור", "עצרי", "סטופ", "stop", "די", "מספיק", "תפסיק", "תפסיקי"]
+
 from .config import (
     ANTHROPIC_API_KEY,
     CLAUDE_MODEL,
