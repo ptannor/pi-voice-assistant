@@ -33,12 +33,15 @@ dependencies = [
     "psutil>=7.2.2",
 ]
 
-[[tool.uv.index]]
-url = "https://cpart.jfrog.io/artifactory/api/pypi/genai-pip-virtual/simple"
-
 # This is a personal project deployed to a home Raspberry Pi with no access to
 # a corporate package registry proxy that some development machines default to
 # -- resolve from public PyPI instead of inheriting that machine-wide index.
+# IMPORTANT: if a UV_INDEX* env var is set (e.g. on a Check Point machine),
+# it silently overrides this and `uv sync`/`uv add` will write a second
+# [[tool.uv.index]] block pointing at that internal registry right back into
+# this file -- confirmed happened twice (see git history). Before running
+# `uv sync`/`uv add` on such a machine, unset it first:
+#   env -u UV_INDEX -u UV_INDEX_CPART_USERNAME -u UV_INDEX_CPART_PASSWORD uv sync
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple"
