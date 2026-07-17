@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Wake word daemon: listens for "Alexa", then records a question, sends it
-through Claude, and speaks the reply back -- in whichever of English/Hebrew
-the user actually spoke.
+"""Wake word daemon: listens for two wake words -- "Alexa" for English, "Hey
+Jarvis" for Hebrew -- then records a question, sends it through Claude, and
+speaks the reply back. Which wake word triggered the conversation determines
+the first turn's language deterministically (see _load_wake_word_model);
+follow-up turns within the same conversation still re-detect language per
+utterance, since a conversation may switch languages mid-stream.
 
-Uses openWakeWord's free, fully open-source pretrained "alexa" model (no
-account, no API key, no signup) as a stand-in for the eventual custom-trained
-"Menachem Mendel" / "Mendy" wake words.
+Uses openWakeWord's free, fully open-source pretrained "alexa" and
+"hey_jarvis" models (no account, no API key, no signup) -- "hey_jarvis" is a
+placeholder Hebrew trigger (its English meaning is irrelevant, it's just a
+distinct acoustic trigger) until the custom-trained "Menachem Mendel" /
+"Mendy" wake word is ready to take its place.
 """
 from __future__ import annotations
 
@@ -47,7 +52,7 @@ from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed
 from audio_check.player import play_wav, play_wav_async
 from audio_check.recorder import record_until_silence
 from brain.config import WAKE_WORD_MODEL_PATH
-from brain.llm import BrainError, ask
+from brain.llm import STOP_WORDS, BrainError, ask
 from brain.respond import speak_reply, speak_reply_chunks
 from brain.stt import TranscriptionError, transcribe
 
@@ -84,7 +89,8 @@ def _wav_duration_seconds(path: Path) -> float:
 # was getting clipped entirely, since recording only used to start once
 # play_wav() returned. See _handle_conversation below.
 ACK_DURATION_SECONDS = _wav_duration_seconds(ACK_WAV)
-WAKE_WORD = "alexa"  # pretrained fallback -- see _load_wake_word_model below
+ENGLISH_WAKE_WORD = "alexa"
+HEBREW_WAKE_WORD = "hey_jarvis"  # placeholder for the trained "mendy" model -- see _load_wake_word_model below
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
 DETECTION_THRESHOLD = 0.6  # Default threshold when music is not playing, to prevent false triggers
@@ -123,35 +129,46 @@ def _said_closing_phrase(text: str, language: str) -> bool:
     return any(phrase in lowered for phrase in phrases)
 
 
-def _load_wake_word_model() -> tuple[Model, str]:
-    """Returns (model, wake_word_key) -- wake_word_key is whatever key that
-    model's `.predict()` output uses for this wake word, which is only ever
-    `WAKE_WORD` ("alexa") for the pretrained model; a custom model's key is
-    derived from its own filename instead.
+def _load_wake_word_model() -> tuple[Model, dict[str, str]]:
+    """Returns (model, wake_word_language) -- wake_word_language maps every
+    wake word key the model listens for to the language ("en"/"he") that
+    saying it selects for the first turn of a conversation. This lets turn 1
+    skip the ambiguous dual-language STT confidence comparison entirely
+    (confirmed unreliable in BOTH directions -- see brain/stt.py's
+    transcribe() docstring) in favor of a deterministic signal: which wake
+    word was actually said. Follow-up turns still re-detect language per
+    utterance, since a conversation may switch languages mid-stream.
 
     WAKE_WORD_MODEL_PATH (see brain/config.py) points at a custom-trained
-    model (e.g. "Mendy") -- training one requires openWakeWord's own Colab
-    notebook (30,000+ hours of negative audio and a multi-framework
+    Hebrew model (e.g. "Mendy") -- training one requires openWakeWord's own
+    Colab notebook (30,000+ hours of negative audio and a multi-framework
     torch+tensorflow training stack make local training impractical here;
     see the README's Wake word section for the actual recipe). Until you've
-    trained and pointed at one, this always falls back to the pretrained
-    "alexa" model.
+    trained and pointed at one, HEBREW_WAKE_WORD falls back to the
+    pretrained "hey_jarvis" model as a placeholder Hebrew trigger -- its
+    English meaning is irrelevant, it's just a distinct, reliable acoustic
+    trigger, same role "alexa" plays for English.
     """
     if WAKE_WORD_MODEL_PATH:
-        wake_word_key = Path(WAKE_WORD_MODEL_PATH).stem
-        model = Model(wakeword_models=[WAKE_WORD_MODEL_PATH], inference_framework="onnx")
-        return model, wake_word_key
+        hebrew_key = Path(WAKE_WORD_MODEL_PATH).stem
+        openwakeword.utils.download_models(model_names=[ENGLISH_WAKE_WORD])
+        model = Model(wakeword_models=[WAKE_WORD_MODEL_PATH, ENGLISH_WAKE_WORD], inference_framework="onnx")
+        return model, {hebrew_key: "he", ENGLISH_WAKE_WORD: "en"}
 
-    openwakeword.utils.download_models(model_names=[WAKE_WORD])
+    openwakeword.utils.download_models(model_names=[ENGLISH_WAKE_WORD, HEBREW_WAKE_WORD])
     # Force onnx: the tflite_runtime wheel available on some platforms (e.g. the
     # Pi's aarch64 build) is compiled against NumPy 1.x and breaks under NumPy 2.x
     # ("_ARRAY_API not found"). onnxruntime works correctly on both dev machine and Pi.
-    model = Model(wakeword_models=[WAKE_WORD], inference_framework="onnx")
-    return model, WAKE_WORD
+    model = Model(wakeword_models=[ENGLISH_WAKE_WORD, HEBREW_WAKE_WORD], inference_framework="onnx")
+    return model, {ENGLISH_WAKE_WORD: "en", HEBREW_WAKE_WORD: "he"}
 
 
-def _listen_for_wake_word(model: Model, wake_word_key: str, in_device: Device, last_trigger: float) -> float:
-    """Block until the wake word is detected; return the new last_trigger time.
+def _listen_for_wake_word(
+    model: Model, wake_word_language: dict[str, str], in_device: Device, last_trigger: float
+) -> tuple[float, str]:
+    """Block until any wake word is detected; return (new last_trigger time,
+    the wake word key that fired) -- the caller uses the latter to look up
+    which language that wake word selects (see _load_wake_word_model).
 
     Runs the InputStream inside this function's `with` block so it's fully
     closed before we record the user's question -- avoids a second
@@ -183,12 +200,13 @@ def _listen_for_wake_word(model: Model, wake_word_key: str, in_device: Device, l
         while True:
             pcm = audio_queue.get()
             prediction = model.predict(pcm)
-            score = prediction.get(wake_word_key, 0.0)
             now = time.monotonic()
             current_threshold = 0.35 if spotify_is_playing else DETECTION_THRESHOLD
-            if score > current_threshold and (now - last_trigger) > COOLDOWN_SECONDS:
-                print(f"Wake word detected: {wake_word_key} (score={score:.2f})", flush=True)
-                return now
+            for key in wake_word_language:
+                score = prediction.get(key, 0.0)
+                if score > current_threshold and (now - last_trigger) > COOLDOWN_SECONDS:
+                    print(f"Wake word detected: {key} (score={score:.2f})", flush=True)
+                    return now, key
 
 
 def _play_wav_with_barge_in(
@@ -196,7 +214,7 @@ def _play_wav_with_barge_in(
     in_device: Device,
     out_device: Device,
     model,
-    wake_word_key,
+    wake_word_keys,
 ) -> bool:
     """Plays a WAV file on out_device while listening to in_device for the wake word.
     Returns True if a barge-in wake word was detected, False otherwise.
@@ -242,11 +260,17 @@ def _play_wav_with_barge_in(
             try:
                 pcm = audio_queue.get(timeout=0.1)
                 prediction = model.predict(pcm)
-                score = prediction.get(wake_word_key, 0.0)
+                # Any wake word interrupts -- not just whichever one started
+                # this conversation, since the user may address the assistant
+                # in either language mid-reply.
+                key, score = max(
+                    ((k, prediction.get(k, 0.0)) for k in wake_word_keys),
+                    key=lambda pair: pair[1],
+                )
                 # Lower threshold (0.35) during active playback to make it easier to
                 # interrupt the assistant's own voice feedback from the speakers.
                 if score > 0.35:
-                    print(f"Barge-in detected (score={score:.2f})! Interrupting playback.", flush=True)
+                    print(f"Barge-in detected: {key} (score={score:.2f})! Interrupting playback.", flush=True)
                     sd.stop()
                     barge_in = True
                     break
@@ -262,13 +286,22 @@ def _handle_conversation(
     in_device: Device,
     out_device: Device,
     model,
-    wake_word_key,
+    wake_word_keys,
     initial_history: list[dict] | None = None,
+    conversation_language: str | None = None,
 ) -> list[dict] | None:
     """Returns `history` as it stood when the conversation ended, so `main()`
-    can offer it to the *next* call as a continuation if a fresh "Alexa"
+    can offer it to the *next* call as a continuation if a fresh wake word
     comes in soon enough (see CONTINUATION_WINDOW_SECONDS) -- otherwise this
     always starts blank.
+
+    `conversation_language` (from which wake word triggered this call -- see
+    _load_wake_word_model) is applied to EVERY turn below, not just the
+    first -- by product decision, a conversation's language never changes
+    mid-stream; switching languages requires a fresh wake word (which starts
+    a new call to this function). This also means every turn only needs one
+    Groq transcription call instead of two (see brain/stt.py's transcribe()
+    docstring for the dual-detect fallback this skips).
     """
     # Acquire the DIALOG audio-focus channel for the duration of this
     # conversation. This pauses (and snapshots) any Spotify music so the mic
@@ -278,6 +311,7 @@ def _handle_conversation(
     # stop_called_in_session flags are now all handled by the focus manager.
     focus.acquire(Channel.DIALOG)
     preempted = False
+    errored = False
 
     history = initial_history
     timeout = INITIAL_QUERY_TIMEOUT
@@ -326,10 +360,11 @@ def _handle_conversation(
             # below plays a second one partway through the longer wait.
             play_wav_async(THINKING_WAV, out_device)
 
-            # Re-detected fresh every turn (not locked to the conversation's
-            # first turn) -- see brain/stt.py's transcribe() docstring for why.
-            stt_mode = "dual"
-            text, language = transcribe(query_wav)
+            # Every turn (not just the first) uses the deterministic language
+            # from whichever wake word triggered this conversation -- see
+            # this function's docstring and brain/stt.py's transcribe().
+            stt_mode = "wake_word" if conversation_language else "dual"
+            text, language = transcribe(query_wav, conversation_language=conversation_language)
             t2 = time.monotonic()
             print(f"Heard ({language}): {text}", flush=True)
             if not text:
@@ -352,7 +387,7 @@ def _handle_conversation(
             #   * A bare "stop" with no timer/alarm in play -> stop the music.
             #   * cancel_timer -> stops the timer only; music still resumes.
             lower_text = (text or "").lower()
-            said_stop = any(w in lower_text for w in ["עצור", "עצרי", "סטופ", "stop"])
+            said_stop = any(w in lower_text for w in STOP_WORDS)
             stop_music_ran = any("stop_music" in stage for stage, _ in ask_timeline)
             cancel_timer_ran = any("cancel_timer" in stage for stage, _ in ask_timeline)
             if focus.dialog_opened_on_alert():
@@ -369,7 +404,7 @@ def _handle_conversation(
             mic_leds.enter_speaking()
             barge_in = False
             for wav in chunks:
-                barge_in = _play_wav_with_barge_in(wav, in_device, out_device, model, wake_word_key)
+                barge_in = _play_wav_with_barge_in(wav, in_device, out_device, model, wake_word_keys)
                 wav.unlink(missing_ok=True)
                 if focus.is_preempted(Channel.DIALOG):
                     preempted = True
@@ -412,14 +447,19 @@ def _handle_conversation(
             if _said_closing_phrase(text, language):
                 break  # explicit "thanks"/"bye" etc. -- end right away
 
+            if said_stop:
+                break  # "stop" means stop listening too, not just go quiet
+
             # Keep listening only when Claude's own reply is a genuine question
             if not reply.rstrip().endswith("?"):
                 break
         except (TranscriptionError, BrainError, RecordingFailed, PlaybackFailed) as exc:
             print(f"Conversation turn failed: {exc}", file=sys.stderr, flush=True)
+            errored = True
             break
         except Exception as exc:
             print(f"Unexpected error handling conversation: {exc!r}", file=sys.stderr, flush=True)
+            errored = True
             break
         finally:
             query_wav.unlink(missing_ok=True)
@@ -428,7 +468,12 @@ def _handle_conversation(
     # Every exit from the loop above (silence timeout, closing phrase, turn
     # cap, or an error) falls through to here -- one clear signal that it's
     # stopped listening, distinct from the ascending "now listening" chime.
-    mic_leds.enter_idle_transition()
+    # An error stays lit (not the usual transition-back-to-idle) since
+    # whatever broke -- an API call, the network -- may still be broken.
+    if errored:
+        mic_leds.enter_error()
+    else:
+        mic_leds.enter_idle_transition()
     # Skip it when an alarm preempted us: the alarm is what should be audible,
     # not a goodbye chime played over it.
     if not preempted:
@@ -454,13 +499,15 @@ def main() -> None:
         out_device = find_output_device(cfg.output_name_hint)
     except AudioCheckError as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        mic_leds.enter_error()
         sys.exit(1)
 
-    model, wake_word_key = _load_wake_word_model()
+    model, wake_word_language = _load_wake_word_model()
     mic_leds.enter_idle()
 
+    listening_for = ", ".join(f"'{key}' ({lang})" for key, lang in wake_word_language.items())
     print(
-        f"Listening for '{wake_word_key}' on '{in_device.name}' (index {in_device.index})...",
+        f"Listening for {listening_for} on '{in_device.name}' (index {in_device.index})...",
         flush=True,
     )
     print(f"Responses play on '{out_device.name}' (index {out_device.index})", flush=True)
@@ -473,7 +520,7 @@ def main() -> None:
     threading.Thread(target=_poll_spotify_status, daemon=True).start()
 
     while True:
-        last_trigger = _listen_for_wake_word(model, wake_word_key, in_device, last_trigger)
+        last_trigger, triggered_key = _listen_for_wake_word(model, wake_word_language, in_device, last_trigger)
 
         if time.monotonic() - last_conversation_end < CONTINUATION_WINDOW_SECONDS:
             print("Continuing previous conversation's context", flush=True)
@@ -481,7 +528,10 @@ def main() -> None:
         else:
             initial_history = None
 
-        last_history = _handle_conversation(in_device, out_device, model, wake_word_key, initial_history)
+        last_history = _handle_conversation(
+            in_device, out_device, model, wake_word_language, initial_history,
+            conversation_language=wake_word_language[triggered_key],
+        )
         last_conversation_end = time.monotonic()
         last_trigger = time.monotonic()  # restart cooldown from when we resume listening
 

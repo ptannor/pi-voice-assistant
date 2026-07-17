@@ -1,15 +1,22 @@
 """LED ring patterns for the reSpeaker XVF3800 4-Mic Array.
 
-Out of the box the array runs LED_EFFECT 4 ("doa"): a blue voice-activity
-trace with a brighter spot in the direction of arrival. That's left as the
-resting/idle look. This module adds three distinct patterns on top of it,
-driven by the `xvf_host` USB control tool that ships with the array (see
-README's Mic LED patterns section for where to get the binary):
+Driven by the `xvf_host` USB control tool that ships with the array (see
+README's Mic LED patterns section for where to get the binary). The device's
+LED protocol only exposes 5 fixed effects (off/breath/rainbow/single-color/
+doa) plus a doa base+highlight color pair -- there's no per-pixel/custom-
+animation command, so a moving "comet" isn't possible; these patterns are
+the closest fit confirmed live against the real hardware:
 
-- listening: wake word just fired, actively recording the question
-- speaking: the assistant's reply is playing
-- idle transition: a brief flourish when a conversation ends, then back to
-  the default "doa" idle look
+- idle: resting look, static rainbow across the ring
+- listening: wake word just fired, actively recording the question -- blue
+  base with a green highlight in the direction the sound is coming from
+  (LED_DOA_COLOR reused with custom colors instead of the device default)
+- speaking: the assistant's reply is playing (solid magenta)
+- idle transition: a brief white flash when a conversation ends, then back
+  to the idle rainbow
+- error: something is stopping the assistant from working (no wifi, a
+  failed API call, no mic/speaker found) -- solid orange, held rather than
+  timed out, since the underlying problem may still be there
 
 All calls are fire-and-forget (background thread, short subprocess timeout)
 so a missing/disconnected array never blocks or crashes the voice pipeline --
@@ -29,15 +36,17 @@ EFFECT_OFF = 0
 EFFECT_BREATH = 1
 EFFECT_RAINBOW = 2
 EFFECT_SOLID = 3
-EFFECT_DOA = 4  # device default -- the resting/idle look
+EFFECT_DOA = 4
 
-# Distinguishable from the idle blue/green DOA trace and from each other.
-LISTENING_COLOR = 0x9B30FF  # violet -- "I'm actively listening for your question"
-LISTENING_SPEED = 3  # fast breath: urgent/attentive
-SPEAKING_COLOR = 0xFF8800  # amber, solid (no motion) -- "I'm talking"
-TRANSITION_SPEED = 4  # fast rainbow sweep
-TRANSITION_SECONDS = 0.7  # how long the sweep plays before settling back to doa
-BRIGHTNESS = 220
+IDLE_EFFECT = EFFECT_RAINBOW  # resting look
+
+LISTENING_BASE_COLOR = 0x0033FF  # blue -- ring base while recording the question
+LISTENING_DOA_COLOR = 0x00FF00  # green -- highlight in the direction of the sound
+SPEAKING_COLOR = 0xFF00FF  # magenta -- assistant is talking
+TRANSITION_COLOR = 0xFFFFFF  # white flash -- wrapping up, heading back to idle
+TRANSITION_SECONDS = 0.5  # how long the flash holds before settling back to idle
+ERROR_COLOR = 0xFF8800  # orange -- reserved for wifi/API/hardware trouble
+BRIGHTNESS = 255
 _SUBPROCESS_TIMEOUT = 2.0
 
 _PLATFORM_DIRS = {
@@ -95,30 +104,31 @@ def _run(*args: str) -> bool:
         return False
 
 
-def _apply_breath(color: int, speed: int) -> None:
-    _run("led_effect", str(EFFECT_BREATH))
-    _run("led_color", f"0x{color:06x}")
-    _run("led_speed", str(speed))
-    _run("led_brightness", str(BRIGHTNESS))
-
-
 def _apply_solid(color: int) -> None:
     _run("led_effect", str(EFFECT_SOLID))
     _run("led_color", f"0x{color:06x}")
     _run("led_brightness", str(BRIGHTNESS))
+    _run("led_gammify", "1")  # gamma-correct so the color reads as vivid, not washed out
+
+
+def _apply_doa(base_color: int, doa_color: int) -> None:
+    _run("led_effect", str(EFFECT_DOA))
+    _run("led_doa_color", f"0x{base_color:06x}", f"0x{doa_color:06x}")
+    _run("led_brightness", str(BRIGHTNESS))
+    _run("led_gammify", "1")
 
 
 def enter_idle() -> None:
-    """Resting state: the array's own default DOA trace."""
+    """Resting state: static rainbow."""
     _bump_generation()
-    threading.Thread(target=lambda: _run("led_effect", str(EFFECT_DOA)), daemon=True).start()
+    threading.Thread(target=lambda: _run("led_effect", str(IDLE_EFFECT)), daemon=True).start()
 
 
 def enter_listening() -> None:
     """Wake word just fired -- actively recording the user's question."""
     _bump_generation()
     threading.Thread(
-        target=lambda: _apply_breath(LISTENING_COLOR, LISTENING_SPEED), daemon=True
+        target=lambda: _apply_doa(LISTENING_BASE_COLOR, LISTENING_DOA_COLOR), daemon=True
     ).start()
 
 
@@ -128,23 +138,31 @@ def enter_speaking() -> None:
     threading.Thread(target=lambda: _apply_solid(SPEAKING_COLOR), daemon=True).start()
 
 
+def enter_error() -> None:
+    """Something is stopping the assistant from working -- held solid orange
+    rather than timing back out to idle, since the underlying problem (no
+    wifi, a failed API call, missing hardware) may still be there. Whatever
+    next calls one of the other `enter_*` functions clears it."""
+    _bump_generation()
+    threading.Thread(target=lambda: _apply_solid(ERROR_COLOR), daemon=True).start()
+
+
 def enter_idle_transition() -> None:
-    """Conversation just ended -- brief flourish, then back to `enter_idle`.
+    """Conversation just ended -- brief white flash, then back to `enter_idle`.
 
     Guarded by a generation token so that if listening/speaking starts again
-    during the flourish (e.g. a fresh wake word right after goodbye), this
+    during the flash (e.g. a fresh wake word right after goodbye), this
     stale transition's delayed restore-to-idle step is skipped instead of
     clobbering the newer state.
     """
     gen = _bump_generation()
 
     def run() -> None:
-        _run("led_effect", str(EFFECT_RAINBOW))
-        _run("led_speed", str(TRANSITION_SPEED))
+        _apply_solid(TRANSITION_COLOR)
         time.sleep(TRANSITION_SECONDS)
         with _generation_lock:
             current = _generation
         if gen == current:
-            _run("led_effect", str(EFFECT_DOA))
+            _run("led_effect", str(IDLE_EFFECT))
 
     threading.Thread(target=run, daemon=True).start()

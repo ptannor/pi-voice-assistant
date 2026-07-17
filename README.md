@@ -1,9 +1,10 @@
 # pi-voice-assistant
 
 A Raspberry Pi 4 voice assistant. `wake_word_daemon.py` does real free-form
-conversation: "Alexa" triggers a recording of your question, which goes
-through an LLM (such as Claude or Gemini) and comes back as spoken audio — in whichever of English/Hebrew
-you actually spoke. See [Wake word](#wake-word-alexa) below.
+conversation: "Alexa" (English) or "Hey Jarvis" (Hebrew) triggers a recording
+of your question, which goes through an LLM (such as Claude or Gemini) and
+comes back as spoken audio — in whichever of English/Hebrew you actually
+spoke. See [Wake word](#wake-word-alexa--hey-jarvis--talking-to-claude) below.
 
 > **What's actually been tested:** the full record → save → playback round
 > trip has been verified on the actual target hardware — a **Raspberry Pi 4
@@ -14,7 +15,8 @@ you actually spoke. See [Wake word](#wake-word-alexa) below.
 > QuadCast- or vendor-specific drivers, but no other specific mic/speaker
 > model has been tried, and Bluetooth speaker output hasn't been verified
 > end-to-end yet (see [Bluetooth speaker
-> setup](#bluetooth-speaker-setup)). The [wake word](#wake-word-alexa)
+> setup](#bluetooth-speaker-setup)). The [wake
+> word](#wake-word-alexa--hey-jarvis--talking-to-claude)
 > pipeline is verified up to the mic-capture stage (confirmed real audio
 > flows through at the correct format via direct RMS measurement) but actual
 > "Alexa" **detection with a real human voice is not yet confirmed** — a
@@ -327,20 +329,35 @@ env -u UV_INDEX uv sync
 (add more `-u` flags for any other `UV_INDEX_*` variables your setup sets),
 then confirm the lockfile only references `pypi.org` before committing.
 
-## Wake word ("Alexa") + talking to Claude
+## Wake word ("Alexa" / "Hey Jarvis") + talking to Claude
 
-`wake_word_daemon.py` listens continuously for the wake word **"Alexa"**.
-When it hears it: plays a short acknowledgment chime, records ~6 seconds of
-your question, transcribes it (auto-detecting English or Hebrew), sends it to
-Claude, and speaks the reply back — in whichever language you spoke. This
-uses [openWakeWord](https://github.com/dscripka/openWakeWord)'s free, fully
-open-source pretrained "alexa" model for wake-word detection — **no account,
-no API key, no signup** required for that part, unlike Porcupine (the
-original choice for this proof-of-concept using its "jarvis" keyword, until
-Picovoice discontinued its free tier in June 2026 and replaced it with a
-7-day trial). "Alexa" is a placeholder for the real custom-trained wake words
-("Menachem Mendel" / "Mendy") planned for a later milestone, also via
-openWakeWord.
+`wake_word_daemon.py` listens continuously for **two** wake words at once:
+**"Alexa"** and **"Hey Jarvis"**. Whichever one you say determines which
+language the *first* turn of that conversation is transcribed in — Alexa for
+English, Hey Jarvis for Hebrew — deterministically, instead of guessing from
+audio alone. Follow-up turns within the same conversation still auto-detect
+language fresh per utterance (so you can switch languages mid-conversation),
+since only the wake word itself is a reliable enough signal to skip that
+detection.
+
+This exists because per-utterance English/Hebrew auto-detection alone proved
+unreliable in both directions — confirmed in testing: a quick "מה השעה"
+(what time is it) got misheard as the English name "Masha," and "play
+Summertime Sadness" got misheard as Hebrew phonetic gibberish. Which wake
+word you used to start the conversation doesn't have that ambiguity.
+
+When either wake word fires: plays a short acknowledgment chime, records ~6
+seconds of your question, transcribes it, sends it to Claude, and speaks the
+reply back — in whichever language you spoke. This uses
+[openWakeWord](https://github.com/dscripka/openWakeWord)'s free, fully
+open-source pretrained "alexa" and "hey_jarvis" models for wake-word
+detection — **no account, no API key, no signup** required for that part,
+unlike Porcupine (the original choice for this proof-of-concept using its
+"jarvis" keyword, until Picovoice discontinued its free tier in June 2026 and
+replaced it with a 7-day trial). "Hey Jarvis" is a placeholder Hebrew trigger
+— its English meaning is irrelevant, it's just a distinct, reliable acoustic
+trigger — until the real custom-trained wake word ("Menachem Mendel" /
+"Mendy") planned for a later milestone replaces it, also via openWakeWord.
 
 **Training a custom wake word (e.g. "Mendy"):** not something to do locally
 in this repo's own dev environment -- openWakeWord's pretrained models are
@@ -371,10 +388,12 @@ Either way you'll end up with a `.onnx` file -- drop it anywhere in this repo
 # add to .pi-config:
 WAKE_WORD_MODEL_PATH=/path/to/mendy.onnx
 ```
-Leave it unset to keep using the pretrained "alexa" model. Once you have a
-real model, expect to tune `DETECTION_THRESHOLD` in `wake_word_daemon.py`
-against real speech -- a custom model's confidence distribution won't
-necessarily match "alexa"'s.
+This replaces "Hey Jarvis" as the Hebrew trigger, still loaded alongside
+"Alexa" for English (see `_load_wake_word_model` in `wake_word_daemon.py`).
+Leave it unset to keep using the pretrained "hey_jarvis" placeholder. Once
+you have a real model, expect to tune `DETECTION_THRESHOLD` in
+`wake_word_daemon.py` against real speech -- a custom model's confidence
+distribution won't necessarily match "alexa"'s or "hey_jarvis"'s.
 
 The conversation itself (`brain/`) does need personal API keys:
 
@@ -456,20 +475,29 @@ normal distance/volume, and the terminal printed `Listening for 'alexa' on
 
 ## Mic LED patterns
 
-The mic is a **Seeed reSpeaker XVF3800 4-Mic Array**. Out of the box it runs
-its own default LED effect (`doa`): a blue voice-activity trace with a
-brighter spot in the direction of arrival. `mic_leds.py` layers three more
-patterns on top of that idle look, driven by Seeed's `xvf_host` USB control
-tool:
+The mic is a **Seeed reSpeaker XVF3800 4-Mic Array**. `mic_leds.py` drives
+its LED ring via Seeed's `xvf_host` USB control tool. The device's LED
+protocol only exposes 5 fixed effects (off/breath/rainbow/single-color/doa)
+plus a doa base+highlight color pair — there's no per-pixel/custom-animation
+command, and `rainbow` renders as a static multicolor ring rather than
+anything that rotates (confirmed live against the real hardware), so these
+are the closest fit within what the firmware actually supports:
 
-- **Listening** (fast violet breathing) — the wake word just fired and it's
-  actively recording your question. This is the most important one: it's
-  your only signal that it actually heard "Alexa" and is waiting on you.
-- **Speaking** (solid amber, no motion) — the assistant's reply is playing.
-- **Idle transition** (a quick rainbow sweep) — plays once when a
-  conversation ends, then settles back into the default `doa` idle look.
+- **Idle** (static rainbow) — resting look.
+- **Listening** (blue base, green highlight) — the wake word just fired
+  and it's actively recording your question, using `led_doa_color` with
+  custom colors instead of the device's own default blue/green. This is the
+  most important one: it's your only signal that it actually heard "Alexa"
+  and is waiting on you.
+- **Speaking** (solid magenta) — the assistant's reply is playing.
+- **Idle transition** (a brief solid white flash) — plays once when a
+  conversation ends, then settles back into the idle rainbow.
+- **Error** (solid orange) — reserved for wifi/API/hardware trouble: a
+  failed transcription/Claude call, a recording/playback failure, or no
+  mic/speaker found at startup. Held rather than timed out, since whatever
+  broke may still be broken; the next successful state clears it.
 
-Colors/speeds are constants at the top of `mic_leds.py` — tweak freely.
+Colors are constants at the top of `mic_leds.py` — tweak freely.
 
 **Setup (per machine — Mac dev box and Pi both need this):**
 
@@ -551,7 +579,8 @@ services start with an even more minimal environment than a non-interactive
 SSH session, so the same PATH issue described above applies here too, just
 with no shell to add a workaround line to.
 
-This service does need `.env` (see [Wake word](#wake-word-alexa--talking-to-claude)
+This service does need `.env` (see [Wake
+word](#wake-word-alexa--hey-jarvis--talking-to-claude)
 above) — `WorkingDirectory` is set to the repo root, so `python-dotenv` finds
 it there automatically, same as running it manually. `.env` is gitignored, so
 `git pull`/`update-pi.sh` never touches it — create it directly on the Pi
@@ -631,16 +660,19 @@ uv run python -m shabbat.gate
 ## Roadmap (not in this milestone)
 
 - Custom-trained wake words ("Menachem Mendel" / "Mendy" via openWakeWord) —
-  `wake_word_daemon.py`'s "Alexa" is a pretrained placeholder, not the real thing
+  `wake_word_daemon.py`'s "Hey Jarvis" is a pretrained placeholder Hebrew
+  trigger, not the real thing; swap it in via `WAKE_WORD_MODEL_PATH` once trained
 - Confirm the full Claude conversation loop end-to-end on real hardware once
-  a working Pi is available again (see [Wake word](#wake-word-alexa--talking-to-claude))
-- Evaluate dual wake words (one per language: English/Hebrew) as a replacement
-  for `brain/stt.py`'s forced-language-per-session approach. Would fully
-  eliminate any STT language-detection dependency, but needs a real
-  benchmark first: confirm two concurrent openWakeWord models don't reintroduce
-  the audio "input overflow" problem this project already hit once on the Pi 4
-  (real-time callback + CPU-bound inference contention) before committing to
-  training a second custom wake word
+  a working Pi is available again (see [Wake word](#wake-word-alexa--hey-jarvis--talking-to-claude))
+- ~~Evaluate dual wake words...~~ Done — "Alexa"/"Hey Jarvis" now determine
+  turn-1 language deterministically (see [Wake
+  word](#wake-word-alexa--hey-jarvis--talking-to-claude)). Confirmed on this
+  dev Mac that a single `Model(wakeword_models=[...])` instance runs both
+  wake words off one shared embedding/melspectrogram pass (only the small
+  final classifier head runs per-model, not the whole pipeline), so this is
+  cheaper than two full concurrent models -- but still **not yet verified on
+  actual Pi 4 hardware**, where the original "input overflow" problem
+  happened. Confirm real-time performance there before relying on this.
 - Timers
 - Spotify control
 - Voice-queryable zmanim ("when does Shabbat start?") — the underlying Hebcal
