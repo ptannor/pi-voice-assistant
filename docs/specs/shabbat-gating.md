@@ -66,11 +66,12 @@ What "the device must not operate" means, precisely:
    If not synced, **stay gated** until sync is confirmed, even if that means staying off longer
    than strictly necessary after a power outage. Never gate "off" (i.e. treat it as safe to
    operate) based on an unconfirmed clock.
-3. **Enforcement lives outside the application, not just inside it.** A `systemd` timer (or a
+3. **Enforcement lives outside the application, not inside it.** A `systemd` timer (or a
    cron-equivalent) actually stops the `pi-voice-assistant` listener service at the
-   candle-lighting boundary and starts it again after havdalah, independent of whether the
-   Python code's own internal check has a bug. The in-app check is a second layer, not the only
-   layer.
+   candle-lighting boundary and starts it again after havdalah. Decided: this is the only
+   enforcement layer -- no separate in-app check inside `wake_word_daemon.py` itself, to avoid
+   the extra compute of a redundant clock/cache read on every wake-word cycle. If the systemd
+   layer has a bug, fix that layer; don't compensate by duplicating the check inside the app.
 4. **Location and Israel/Diaspora setting are explicit config, not inferred.** A silent wrong
    default here (e.g. one day of Yom Tov instead of two) is a religious failure, not a
    cosmetic bug — see Open questions.

@@ -19,6 +19,12 @@ dependencies = [
     "anthropic",
     "python-dotenv",
     "spotipy>=2.26.0",
+    # Mendy's calendar (brain/gcal.py) -- Apache-2.0, license-compatible.
+    "google-api-python-client",
+    "google-auth",
+    # Telegram bot (telegram_bot_daemon.py) -- LGPL-3.0, fine as a dependency
+    # of this personal MIT-licensed project.
+    "python-telegram-bot>=20",
 ]
 
 # This is a personal project deployed to a home Raspberry Pi with no access to

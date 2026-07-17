@@ -1,0 +1,12 @@
+[Unit]
+Description=pi-voice-assistant Telegram bot (Mendy calendar via chat)
+
+[Service]
+Type=simple
+WorkingDirectory=/home/<PI_USER>/<PI_DIR>
+ExecStart=/home/<PI_USER>/.local/bin/uv run telegram_bot_daemon.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

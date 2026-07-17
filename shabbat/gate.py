@@ -87,7 +87,50 @@ def _message_name(event) -> str:
     return f"havdalah_{occasion}"
 
 
-def fire_due_announcements(config: ShabbatConfig, events, now: datetime) -> None:
+def _speak_medication_digest(event, windows: list, out_device) -> None:
+    """Dynamic TTS companion to the static entrance/exit WAV -- a medication
+    schedule doesn't pause for Shabbat, but this device does, so this is the
+    one chance to say it out loud: a heads-up right before candle-lighting
+    for what's due *during* Shabbat/Yom Tov, and a catch-up right after
+    havdalah for the same list, since none of it could actually be spoken
+    while gated.
+
+    Entirely best-effort: any failure here (calendar API, network, TTS) is
+    swallowed so it can never affect the gate's own fail-closed enforcement
+    or the static announcement that already played moments before this is
+    called (see fire_due_announcements).
+    """
+    try:
+        from brain import gcal
+        from brain.respond import speak_reply
+
+        if event.kind == "entrance":
+            window = next((w for w in windows if w.start == event.at), None)
+        elif event.kind == "exit":
+            window = next((w for w in windows if w.end == event.at), None)
+        else:
+            return
+        if window is None:
+            return
+
+        items = gcal.upcoming_between(window.start, window.end)
+        if not items:
+            return
+        titles = list(dict.fromkeys(item.get("summary", "Reminder") for item in items))
+        is_hebrew = any(any("֐" <= c <= "׾" for c in t) for t in titles)
+        names = ", ".join(titles)
+
+        if event.kind == "entrance":
+            text = f"לפני שבת, תזכורת לתרופות: {names}" if is_hebrew else f"Before Shabbat, a medication reminder: {names}"
+        else:
+            text = f"תזכורות לתרופות מזמן השבת: {names}" if is_hebrew else f"Medication reminders from during Shabbat: {names}"
+
+        speak_reply(text, out_device)
+    except Exception as exc:
+        print(f"Medication digest failed (non-fatal): {exc}", file=sys.stderr)
+
+
+def fire_due_announcements(config: ShabbatConfig, events, now: datetime, windows: list) -> None:
     fired = _load_fired_ids(config.state_path)
     due = [e for e in events if now - ANNOUNCEMENT_LOOKBACK <= e.at <= now and e.event_id not in fired]
     if not due:
@@ -106,6 +149,8 @@ def fire_due_announcements(config: ShabbatConfig, events, now: datetime) -> None
             play_wav(wav, out_device)
         except AudioCheckError as exc:
             print(f"Announcement playback failed: {exc}", file=sys.stderr)
+        if event.kind in ("entrance", "exit"):
+            _speak_medication_digest(event, windows, out_device)
         fired.add(event.event_id)
 
     _save_fired_ids(config.state_path, fired, now)
@@ -134,7 +179,7 @@ def main() -> None:
     enforce_gate(config, should_gate)
 
     events = scheduled_events(windows, config.warning_offsets_minutes)
-    fire_due_announcements(config, events, now)
+    fire_due_announcements(config, events, now, windows)
 
 
 if __name__ == "__main__":

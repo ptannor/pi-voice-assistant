@@ -19,7 +19,7 @@ for it and TOOLS is sent to the API as-is.
 """
 from __future__ import annotations
 
-from . import memory, spotify, timer
+from . import gcal, memory, spotify, timer
 from .calculator import calculate
 from .language import LANGUAGE_NAMES
 from .mode import set_funny_voice
@@ -368,6 +368,77 @@ TOOLS = [
             "required": ["direction"],
         },
     },
+    # Real (not a stub) -- see gcal.py. Language-neutral (not split into
+    # _hebrew/_english variants like music/timers): the inputs here are
+    # structured fields Claude has already normalized out of freeform speech,
+    # not raw query text, so one tool per action is enough.
+    {
+        "name": "add_calendar_event",
+        "description": (
+            "Add a reminder to Mendy's calendar -- e.g. a medication schedule, "
+            "appointment, or other recurring obligation. For something like "
+            "'antibiotics at 8am and 8pm every day for 10 days', pass both times "
+            "in the same call so they're linked as one reminder."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short title, e.g. 'Antibiotics'."},
+                "date": {
+                    "type": "string",
+                    "description": "The first/only date this should start, as YYYY-MM-DD, resolved from the current date.",
+                },
+                "times": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "One or more times of day in 24h HH:MM, e.g. ['08:00', '20:00'].",
+                },
+                "recurrence": {
+                    "type": "string",
+                    "enum": ["none", "daily", "weekly"],
+                    "description": "How often it repeats. 'none' for a one-time reminder.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of occurrences per time-of-day, e.g. 10 for 'for 10 days'. Omit if using until_date, or for a one-time reminder.",
+                },
+                "until_date": {
+                    "type": "string",
+                    "description": "Last date it repeats, as YYYY-MM-DD, e.g. for 'until next Friday'. Omit if using count.",
+                },
+                "notes": {"type": "string", "description": "Any extra detail worth keeping, otherwise omit."},
+            },
+            "required": ["title", "date", "times", "recurrence"],
+        },
+    },
+    {
+        "name": "list_calendar_events",
+        "description": "List upcoming reminders on Mendy's calendar.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days_ahead": {
+                    "type": "integer",
+                    "description": "How many days ahead to look. Default 7.",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "cancel_calendar_event",
+        "description": "Cancel/remove a reminder from Mendy's calendar, matched by a description of its title.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text identifying which reminder to cancel, e.g. 'antibiotics'.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 # Tools not listed here default to both languages.
@@ -475,11 +546,37 @@ def execute_tool(name: str, language: str, tool_input: dict) -> str:
         except spotify.SpotifyError as exc:
             return f"status: error_stop_failed, details: {exc}"
 
-    if name == "set_timer_hebrew":
+    if name in ("set_timer_hebrew", "set_timer_english"):
         return timer.set_timer(tool_input["duration_seconds"])
 
-    if name == "cancel_timer_hebrew":
+    if name in ("cancel_timer_hebrew", "cancel_timer_english"):
         return timer.cancel_timer()
+
+    if name == "add_calendar_event":
+        try:
+            return gcal.add_event(
+                title=tool_input["title"],
+                date=tool_input["date"],
+                times=tool_input["times"],
+                recurrence=tool_input.get("recurrence", "none"),
+                count=tool_input.get("count"),
+                until_date=tool_input.get("until_date"),
+                notes=tool_input.get("notes", ""),
+            )
+        except gcal.CalendarError as exc:
+            return f"status: error_calendar_failed, details: {exc}"
+
+    if name == "list_calendar_events":
+        try:
+            return gcal.list_events(tool_input.get("days_ahead", 7))
+        except gcal.CalendarError as exc:
+            return f"status: error_calendar_failed, details: {exc}"
+
+    if name == "cancel_calendar_event":
+        try:
+            return gcal.cancel_events(query=tool_input["query"])
+        except gcal.CalendarError as exc:
+            return f"status: error_calendar_failed, details: {exc}"
 
     if name == "tell_joke_hebrew":
         import random
