@@ -698,14 +698,17 @@ systemctl --user start pi-voice-assistant
 
 Design doc: `docs/specs/shabbat-gating.md`. The device must not operate
 during Shabbat or Yom Tov — this is enforced by a separate checker
-(`shabbat/gate.py`) that runs every minute via its own systemd timer,
-independent of the wake-word daemon's own code, so a bug in one doesn't
-compromise the other. It:
+(`shabbat/gate.py`) that runs every minute, independent of the wake-word
+daemon's own code, so a bug in one doesn't compromise the other. **Works on
+Mac, Linux, or Windows** — it prefers systemd where available (the real Pi
+deployment, see below, which also gets crash-restart and start-at-boot for
+free), and otherwise manages `wake_word_daemon.py` directly via a pidfile
+(`wake_word_daemon.pid`, gitignored) and `psutil`, so gating still works
+identically wherever it's actually run. It:
 
-- Stops `pi-voice-assistant` (the wake-word daemon) at candle-lighting and
-  starts it again at havdalah, using cached [Hebcal](https://www.hebcal.com/)
-  data (candle-lighting, havdalah, and Yom Tov days) for your configured
-  location.
+- Stops the wake-word daemon at candle-lighting and starts it again at
+  havdalah, using cached [Hebcal](https://www.hebcal.com/) data
+  (candle-lighting, havdalah, and Yom Tov days) for your configured location.
 - Plays spoken warnings at 15/10/5 minutes before candle-lighting, plus
   distinct entrance/exit announcements — with separate Hebrew wording for
   Shabbat vs. Yom Tov (see the spec for why that distinction matters).
@@ -716,8 +719,10 @@ compromise the other. It:
   the device is gated off. Best-effort: a calendar/network failure here is
   swallowed and never affects gating itself.
 - **Fails closed on any uncertainty**: if the system clock isn't confirmed
-  NTP-synced, or the cached zmanim data is missing/stale beyond 30 days, it
-  gates the device *off* rather than risk operating during Shabbat.
+  synced (checked by querying a real NTP server directly — `shabbat/ntp.py`
+  — rather than an OS-specific "am I synced" tool, so this is also
+  cross-platform), or the cached zmanim data is missing/stale beyond 30 days,
+  it gates the device *off* rather than risk operating during Shabbat.
 - Gates on full Yom Tov days only (Rosh Hashana, Yom Kippur, Pesach I/VII,
   Shavuot, Sukkot I, Shmini Atzeret) — Chol HaMoed (the intermediate days of
   Pesach/Sukkot) is treated as a regular day.

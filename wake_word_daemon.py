@@ -16,6 +16,7 @@ openWakeWord's pretrained "hey_jarvis" model as a placeholder Hebrew trigger
 from __future__ import annotations
 
 import json
+import os
 import queue
 import sys
 import tempfile
@@ -60,6 +61,10 @@ from brain.stt import TranscriptionError, transcribe
 
 ACK_WAV = Path(__file__).parent / "assets" / "chime.wav"
 GOODBYE_WAV = Path(__file__).parent / "assets" / "goodbye_chime.wav"
+# Written at startup, removed on clean exit -- lets shabbat/gate.py check
+# liveness/terminate this process directly on platforms without systemd
+# (see its enforce_gate). Gitignored, same as the other runtime state files.
+PIDFILE = Path(__file__).parent / "wake_word_daemon.pid"
 # Played (fire-and-forget) the moment a turn needs a tool call -- e.g.
 # web_search, which dominates turn latency (~3.6-4s) on most factual/local
 # questions. Without this, the assistant sits silent that whole time; this
@@ -496,6 +501,14 @@ def _handle_conversation(
 
 
 def main() -> None:
+    PIDFILE.write_text(str(os.getpid()))
+    try:
+        _main()
+    finally:
+        PIDFILE.unlink(missing_ok=True)
+
+
+def _main() -> None:
     cfg = DEFAULT_CONFIG
     try:
         in_device = find_input_device(cfg.input_name_hint)

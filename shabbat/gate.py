@@ -15,10 +15,13 @@ gates the device OFF, never on.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import psutil
 
 from audio_check.devices import find_output_device
 from audio_check.errors import AudioCheckError
@@ -31,6 +34,13 @@ from .schedule import build_windows, is_gated, scheduled_events
 
 ANNOUNCEMENT_LOOKBACK = timedelta(minutes=2)  # don't fire events older than this if a run was missed
 STATE_PRUNE_AFTER_DAYS = 60
+
+REPO_ROOT = Path(__file__).parent.parent
+# Only used on platforms without systemd (see enforce_gate) -- wake_word_daemon.py
+# writes its own pid here at startup so this checker has something durable to
+# test liveness against/terminate, rather than scanning the whole process list.
+DAEMON_PIDFILE = REPO_ROOT / "wake_word_daemon.pid"
+DAEMON_SCRIPT = REPO_ROOT / "wake_word_daemon.py"
 
 
 def _systemctl(*args: str) -> subprocess.CompletedProcess:
@@ -45,14 +55,63 @@ def _service_is_active(unit: str) -> bool:
     return result.stdout.strip() == "active"
 
 
+def _daemon_pid() -> int | None:
+    if not DAEMON_PIDFILE.exists():
+        return None
+    try:
+        return int(DAEMON_PIDFILE.read_text().strip())
+    except (ValueError, OSError):
+        return None
+
+
+def _daemon_is_running() -> bool:
+    pid = _daemon_pid()
+    return pid is not None and psutil.pid_exists(pid)
+
+
+def _stop_daemon() -> None:
+    pid = _daemon_pid()
+    if pid is not None:
+        try:
+            psutil.Process(pid).terminate()
+        except psutil.NoSuchProcess:
+            pass
+    DAEMON_PIDFILE.unlink(missing_ok=True)
+
+
+def _start_daemon() -> None:
+    subprocess.Popen(
+        [sys.executable, str(DAEMON_SCRIPT)],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    # wake_word_daemon.py writes DAEMON_PIDFILE itself once it's actually running.
+
+
 def enforce_gate(config: ShabbatConfig, should_gate: bool) -> None:
-    active = _service_is_active(config.systemd_unit)
+    # Prefer systemd where it's actually available (the real Pi deployment,
+    # see systemd/pi-voice-assistant.service) -- it also gets crash-restart
+    # and start-at-boot for free, which the psutil fallback below doesn't
+    # attempt to replicate. Elsewhere (Mac/Windows dev, or any host without
+    # systemd), manage the process directly so gating still works everywhere.
+    if shutil.which("systemctl") is not None:
+        active = _service_is_active(config.systemd_unit)
+        if should_gate and active:
+            print(f"Gating: stopping {config.systemd_unit}")
+            _systemctl("stop", config.systemd_unit)
+        elif not should_gate and not active:
+            print(f"Un-gating: starting {config.systemd_unit}")
+            _systemctl("start", config.systemd_unit)
+        return
+
+    active = _daemon_is_running()
     if should_gate and active:
-        print(f"Gating: stopping {config.systemd_unit}")
-        _systemctl("stop", config.systemd_unit)
+        print("Gating: stopping wake_word_daemon.py")
+        _stop_daemon()
     elif not should_gate and not active:
-        print(f"Un-gating: starting {config.systemd_unit}")
-        _systemctl("start", config.systemd_unit)
+        print("Un-gating: starting wake_word_daemon.py")
+        _start_daemon()
 
 
 def _load_fired_ids(state_path: Path) -> set[str]:

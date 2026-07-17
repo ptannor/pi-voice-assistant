@@ -9,6 +9,16 @@ both this checker and the wake-word daemon run as **user-level** systemd units (
 Fail-safe rules below — a root-level service would not have access to the per-user PipeWire
 audio session needed to play the announcements.
 
+**Update (cross-platform):** the original implementation only worked on Linux with systemd
+(`timedatectl` for clock trust, `systemctl` for enforcement) — meaning it silently did nothing at
+all on the Mac dev box, which is how a real 15-minute warning went unfired. `shabbat/ntp.py` now
+checks clock trust by querying a real NTP server directly (`ntplib`) instead of an OS tool;
+`shabbat/gate.py`'s `enforce_gate` still prefers systemd where available (real Pi deployment,
+free crash-restart/start-at-boot) but falls back to managing `wake_word_daemon.py` directly via a
+pidfile + `psutil` everywhere else. Fail-safe rule 3 below ("enforcement lives outside the
+application") still holds either way — only *how* it lives outside the application is now
+platform-dependent, not *whether*.
+
 ## Why this is first
 
 Per the architecture review (see conversation/PR history), this is the one feature where a

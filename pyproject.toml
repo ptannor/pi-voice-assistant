@@ -25,7 +25,16 @@ dependencies = [
     # Telegram bot (telegram_bot_daemon.py) -- LGPL-3.0, fine as a dependency
     # of this personal MIT-licensed project.
     "python-telegram-bot>=20",
+    # Cross-platform Shabbat gating (shabbat/ntp.py, shabbat/gate.py) -- both
+    # MIT/BSD, license-compatible. ntplib queries a real NTP server directly
+    # instead of an OS-specific "am I synced" tool; psutil manages the
+    # wake_word_daemon.py process directly on platforms without systemd.
+    "ntplib>=0.4.0",
+    "psutil>=7.2.2",
 ]
+
+[[tool.uv.index]]
+url = "https://cpart.jfrog.io/artifactory/api/pypi/genai-pip-virtual/simple"
 
 # This is a personal project deployed to a home Raspberry Pi with no access to
 # a corporate package registry proxy that some development machines default to

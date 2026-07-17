@@ -18,3 +18,4 @@ household_memory/
 scratch_name_samples/
 logs/
 vendor/xvf_host/
+wake_word_daemon.pid
