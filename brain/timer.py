@@ -61,10 +61,45 @@ def set_timer(duration_seconds: int, out_device=None) -> str:
     return f"הטיימר הוגדר בהצלחה ל-{duration_seconds} שניות."
 
 
+def _stop_alarm_thread() -> bool:
+    """Signals the looping alarm thread to stop and waits (briefly) for it to
+    actually exit. Returns whether there was one running. A bare _stop_event.set()
+    without joining isn't enough -- the loop can still be mid-play_wav() on
+    the alarm sound, and the caller (dismiss_ringing_alarm, just below) is
+    about to want the same output device itself immediately after; joining
+    first ensures that play_wav() call has actually returned before anything
+    else touches the device, rather than relying on audio_check.player's
+    playback lock alone to serialize them."""
+    if _active_timer_thread and _active_timer_thread.is_alive():
+        _stop_event.set()
+        _active_timer_thread.join(timeout=2.0)
+        return True
+    return False
+
+
+def dismiss_ringing_alarm() -> None:
+    """Stops the looping alarm-sound thread immediately, without
+    cancel_timer()'s other side effects (stopping Spotify, releasing the
+    ALERT channel -- the caller, brain/audio_focus.py's DIALOG acquire,
+    already handles releasing ALERT itself as part of waking up on a ringing
+    alarm).
+
+    Confirmed necessary: waking up on a ringing alarm used to only update
+    the focus manager's bookkeeping (marking ALERT released), while the
+    alarm loop thread itself kept calling play_wav() in a tight loop,
+    oblivious to that -- it only ever checks _stop_event, which nothing set
+    until cancel_timer() ran later, well after the conversation had already
+    started. That left the alarm thread and the wake-word ack chime's own
+    play_wav() call contending for the same output device at the same time,
+    which hung indefinitely (see audio_check/player.py's playback lock for
+    the other half of this fix).
+    """
+    _stop_alarm_thread()
+
+
 def cancel_timer() -> str:
     """Cancels the currently running background timer and stops Spotify music
     (in case regular music, not the timer sound, is what's playing)."""
-    global _active_timer_thread, _stop_event
     stopped_music = False
     try:
         spotify.stop()
@@ -75,9 +110,7 @@ def cancel_timer() -> str:
     # playing before the alarm resumes when the current speaking turn ends.
     focus.release(Channel.ALERT)
 
-    if _active_timer_thread and _active_timer_thread.is_alive():
-        _stop_event.set()
-        _active_timer_thread.join(timeout=1.0)
+    if _stop_alarm_thread():
         return "הטיימר בוטל."
 
     if stopped_music:
