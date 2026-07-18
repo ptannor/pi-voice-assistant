@@ -106,8 +106,18 @@ def _build_rrule(recurrence: str, count: int | None, until_date: str | None) -> 
     return rrule
 
 
-def _event_group(item: dict) -> str:
+def event_group(item: dict) -> str:
     return item.get("extendedProperties", {}).get("private", {}).get("reminder_group") or item["id"]
+
+
+def category_of(item: dict) -> str | None:
+    """The item's critical/morning/regular/uncertain category (see
+    brain/classify.py), or None if it's never been classified at all --
+    distinct from "uncertain", which means classification was attempted but
+    not confident. Only items created outside Mendy (directly in the
+    Calendar app) before the reclassification poll reaches them are ever
+    None."""
+    return item.get("extendedProperties", {}).get("private", {}).get("category")
 
 
 def _instance_label(item: dict) -> str:
@@ -123,13 +133,18 @@ def add_event(
     count: int | None = None,
     until_date: str | None = None,
     notes: str = "",
+    category: str | None = None,
 ) -> str:
     """Creates one Google Calendar event per entry in `times` -- Google has no
     sub-daily recurrence, so "8am and 8pm every day" needs two separate daily
     events, not one. All events from a single call share a short
     `reminder_group` id (stamped into extendedProperties.private) so they can
-    later be listed/cancelled together as one logical reminder. Returns a
-    short status string for Claude to turn into a spoken confirmation.
+    later be listed/cancelled together as one logical reminder. `category`
+    (critical/morning/regular/uncertain -- see brain/classify.py) is stamped
+    alongside it if given; omit to leave the event unclassified (the
+    reclassification poll in brain/reminders.py will pick it up later).
+    Returns a short status string for Claude to turn into a spoken
+    confirmation.
     """
     service = _get_service()
     if not times:
@@ -137,6 +152,9 @@ def add_event(
 
     group_id = uuid.uuid4().hex[:8]
     rrule = _build_rrule(recurrence, count, until_date)
+    private: dict[str, str] = {"reminder_group": group_id, "created_by": _CREATED_BY}
+    if category:
+        private["category"] = category
 
     created_times = []
     try:
@@ -148,9 +166,7 @@ def add_event(
                 "description": notes,
                 "start": {"dateTime": start.isoformat(), "timeZone": HOUSEHOLD_TIMEZONE},
                 "end": {"dateTime": end.isoformat(), "timeZone": HOUSEHOLD_TIMEZONE},
-                "extendedProperties": {
-                    "private": {"reminder_group": group_id, "created_by": _CREATED_BY}
-                },
+                "extendedProperties": {"private": private},
             }
             if rrule:
                 body["recurrence"] = [rrule]
@@ -203,7 +219,7 @@ def list_events(days_ahead: int = 60) -> str:
     order: list[str] = []
     groups: dict[str, dict] = {}
     for item in items:
-        gid = _event_group(item)
+        gid = event_group(item)
         if gid not in groups:
             groups[gid] = {"title": item.get("summary", "Untitled"), "times": []}
             order.append(gid)
@@ -213,8 +229,8 @@ def list_events(days_ahead: int = 60) -> str:
     return "status: ok, upcoming: " + " | ".join(lines)
 
 
-def cancel_events(query: str = "", event_group: str = "") -> str:
-    """Deletes every upcoming event matching `event_group` exactly, or whose
+def cancel_events(query: str = "", group_id: str = "") -> str:
+    """Deletes every upcoming event matching `group_id` exactly, or whose
     title contains `query` (case-insensitive substring -- mirrors
     memory.forget()'s match semantics: a person reviewing the tool result is
     the real safeguard against removing the wrong thing). Deleting a
@@ -222,8 +238,8 @@ def cancel_events(query: str = "", event_group: str = "") -> str:
     """
     service = _get_service()
     query = (query or "").strip().lower()
-    event_group = (event_group or "").strip()
-    if not query and not event_group:
+    group_id = (group_id or "").strip()
+    if not query and not group_id:
         return "status: error_no_query"
 
     now = datetime.now(_tz())
@@ -241,7 +257,7 @@ def cancel_events(query: str = "", event_group: str = "") -> str:
     removed = []
     for item in result.get("items", []):
         title = item.get("summary", "")
-        matches = (event_group and _event_group(item) == event_group) or (query and query in title.lower())
+        matches = (group_id and event_group(item) == group_id) or (query and query in title.lower())
         if not matches:
             continue
         try:
@@ -253,6 +269,47 @@ def cancel_events(query: str = "", event_group: str = "") -> str:
     if not removed:
         return "status: error_not_found"
     return f"status: cancelled, removed: {'; '.join(removed)}"
+
+
+def set_category_for_group(group_id: str, category: str) -> str:
+    """Stamps `category` (critical/morning/regular/uncertain -- see
+    brain/classify.py) onto every upcoming event sharing `group_id`, or the
+    single event whose own id equals `group_id` if it has no reminder_group
+    (see event_group's fallback). Merges into the existing
+    extendedProperties.private dict rather than overwriting it -- the
+    Calendar API's patch replaces a nested map field wholesale, so blindly
+    setting extendedProperties.private to just {"category": ...} would wipe
+    out reminder_group/created_by.
+    """
+    service = _get_service()
+    now = datetime.now(_tz())
+    try:
+        result = (
+            service.events()
+            .list(calendarId=MENDY_CALENDAR_ID, timeMin=now.isoformat(), singleEvents=False, maxResults=250)
+            .execute()
+        )
+    except Exception as exc:
+        raise CalendarError(f"Couldn't look up events to reclassify: {exc}") from exc
+
+    updated = 0
+    for item in result.get("items", []):
+        if event_group(item) != group_id:
+            continue
+        private = {**item.get("extendedProperties", {}).get("private", {}), "category": category}
+        try:
+            service.events().patch(
+                calendarId=MENDY_CALENDAR_ID,
+                eventId=item["id"],
+                body={"extendedProperties": {"private": private}},
+            ).execute()
+            updated += 1
+        except Exception:
+            continue
+
+    if not updated:
+        return "status: error_not_found"
+    return f"status: ok, updated: {updated}"
 
 
 def upcoming_between(start: datetime, end: datetime) -> list[dict]:
