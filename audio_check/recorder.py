@@ -175,6 +175,15 @@ def record_until_silence(
 
     chunks: list[np.ndarray] = []
     lead_in_buffer: list[np.ndarray] = []
+    # Chunks in the current run of consecutive loud chunks, *before* that run
+    # has reached min_speech_run_chunks and is confirmed as real speech --
+    # without this, those chunks (up to MIN_SPEECH_RUN_SECONDS worth, ~0.3s)
+    # were silently dropped entirely: not part of lead_in_buffer (that
+    # window had already closed) and not yet appended to `chunks` (only
+    # happens once speech_started is already True). Confirmed live: this
+    # clipped the first word of nearly every utterance, in both languages
+    # ("מה" from "מה המזג אוויר מחר", "what's" from "what's the weather").
+    pending_speech_buffer: list[np.ndarray] = []
     speech_started = False
     silence_elapsed = 0.0
     elapsed = 0.0
@@ -195,29 +204,42 @@ def record_until_silence(
 
             elapsed += chunk_duration
             rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
-
-            consecutive_loud_chunks = consecutive_loud_chunks + 1 if rms > SILENCE_RMS_THRESHOLD else 0
-
-            if consecutive_loud_chunks >= min_speech_run_chunks:
-                # A sustained run over threshold -- this is really speech (the
-                # user talking again), not an isolated background blip. Reset
-                # the silence countdown.
-                if not speech_started and lead_in_buffer:
-                    chunks.extend(lead_in_buffer)
-                    lead_in_buffer = []
-                speech_started = True
-                silence_elapsed = 0.0
-            elif speech_started:
-                # Either true quiet, or a loud blip too brief to count as
-                # renewed speech -- both count toward ending this turn.
-                silence_elapsed += chunk_duration
+            is_loud = rms > SILENCE_RMS_THRESHOLD
+            consecutive_loud_chunks = consecutive_loud_chunks + 1 if is_loud else 0
 
             if speech_started:
                 chunks.append(chunk)
+                if consecutive_loud_chunks >= min_speech_run_chunks:
+                    # A sustained run over threshold -- this is really speech
+                    # (the user talking again), not an isolated background
+                    # blip. Reset the silence countdown.
+                    silence_elapsed = 0.0
+                else:
+                    # Either true quiet, or a loud blip too brief to count as
+                    # renewed speech -- both count toward ending this turn.
+                    silence_elapsed += chunk_duration
                 if silence_elapsed >= silence_duration:
                     break
-            elif elapsed >= initial_timeout:
-                return None
+            else:
+                # Not yet confirmed as real speech -- buffer this run of loud
+                # chunks (discarding it if the streak breaks before reaching
+                # the threshold, same noise-rejection as before) instead of
+                # dropping it outright, so it can be recovered once the run
+                # is actually confirmed.
+                if is_loud:
+                    pending_speech_buffer.append(chunk)
+                else:
+                    pending_speech_buffer = []
+
+                if consecutive_loud_chunks >= min_speech_run_chunks:
+                    if lead_in_buffer:
+                        chunks.extend(lead_in_buffer)
+                        lead_in_buffer = []
+                    chunks.extend(pending_speech_buffer)
+                    pending_speech_buffer = []
+                    speech_started = True
+                elif elapsed >= initial_timeout:
+                    return None
     finally:
         stream.stop()
         stream.close()
