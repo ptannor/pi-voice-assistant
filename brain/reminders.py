@@ -15,14 +15,20 @@ scan of that cache fires anything due now. Fired instances are recorded in a
 small gitignored JSON file (keyed by Google's own per-instance event id) so a
 daemon restart never re-announces something already spoken -- mirrors
 shabbat/gate.py's _load_fired_ids/_save_fired_ids state-file pattern.
+
+Every reminder carries a critical/morning/regular/uncertain category (see
+brain/classify.py) stamped onto the calendar event itself, either at creation
+(brain/tools.py's add_calendar_event) or by _reclassify_new_items below for
+anything created/edited outside Mendy -- the Calendar app, or directly via
+Telegram. A second background thread, _critical_nudge_loop, separately
+handles the "keep checking in until acknowledged" behavior critical items
+need, on its own slower cadence -- see its docstring.
 """
 from __future__ import annotations
 
 import json
 import threading
 import time
-import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -37,12 +43,11 @@ from .config import (
     HOUSEHOLD_TIMEZONE,
     REMINDER_LEAD_MINUTES,
     REMINDER_SOUND_PATH,
-    TELEGRAM_ALLOWED_CHAT_IDS,
-    TELEGRAM_BOT_TOKEN,
     WAKEUP_SOUND_PATH,
     WAKEUP_TITLE_KEYWORD,
 )
 from .respond import speak_reply
+from .telegram_push import push as push_telegram
 
 FETCH_INTERVAL_SECONDS = 5 * 60
 FIRE_INTERVAL_SECONDS = 20
@@ -57,14 +62,17 @@ DIALOG_DEFER_SECONDS = 90
 # still speaks; older than this, it's text-only -- announcing "take your 8am
 # antibiotics" out loud at 2pm is more confusing than useful.
 LATE_FIRE_GRACE_MINUTES = 30
-# How often a critical reminder (e.g. medication) re-nags while unacknowledged.
-CRITICAL_NAG_INTERVAL_SECONDS = 3 * 60
-# Safety cap: stop nagging after this long regardless of acknowledgement, so a
-# missed confirmation can't ring forever. Cancel/re-add the reminder as a
-# workaround if a real one runs past this.
-CRITICAL_MAX_NAG_SECONDS = 2 * 60 * 60
+
+# How often a still-unhandled critical reminder gets checked in on again --
+# "a few times a day", not a tight repeat -- and the local-hour window that's
+# allowed to happen in, so nobody gets proactively nudged awake at 3am about
+# a flight. Applies both to the proactive spoken check-in (_critical_nudge_loop)
+# and to the conversational mention (brain/llm.py's _critical_reminders_prompt_line).
+CRITICAL_NUDGE_INTERVAL_HOURS = 3
+CRITICAL_QUIET_HOURS = (8, 21)  # [start, end) local hour, 24h clock
 
 STATE_PATH = Path(__file__).parent.parent / "logs" / "reminders_fired.json"
+CRITICAL_STATE_PATH = Path(__file__).parent.parent / "logs" / "critical_pending.json"
 CHIME_WAV = Path(__file__).parent.parent / "assets" / "chime.wav"
 
 # Matches the recurring "הלכה יומית" calendar event (see brain/halacha.py's
@@ -75,12 +83,6 @@ CHIME_WAV = Path(__file__).parent.parent / "assets" / "chime.wav"
 HALACHA_TITLE_KEYWORD = "הלכה"
 
 _lead = timedelta(minutes=REMINDER_LEAD_MINUTES)
-
-# item_id -> calendar item, for critical reminders currently ringing/nagging.
-# Popped by acknowledge() once a household member explicitly confirms one is
-# handled -- see _fire_critical.
-_critical_pending: dict[str, dict] = {}
-_critical_lock = threading.Lock()
 
 
 def _tz() -> ZoneInfo:
@@ -112,71 +114,29 @@ def _is_hebrew(text: str) -> bool:
     return any("֐" <= c <= "׾" for c in text)
 
 
-def _is_critical(item: dict) -> bool:
-    """Whether `item` is a critical reminder (e.g. medication) that should
-    keep nagging until explicitly acknowledged via acknowledge() below,
-    instead of firing once like a normal reminder.
-
-    Stubbed False for now -- the calendar-side marking mechanism (how an
-    event actually gets flagged critical when created, and the confirmation
-    tool Claude calls when the user says they've handled it) is being built
-    separately. Wire the real check in here once that lands, e.g.:
-        return item.get("extendedProperties", {}).get("private", {}).get("critical") == "true"
-    matching the existing _event_group helper's style in brain/gcal.py.
+def _sound_for(category: str | None, title: str) -> Path:
+    """Which sound to play before speaking a reminder titled `title` in
+    category `category` (critical/morning/regular/uncertain/None -- see
+    brain/gcal.py's category_of). WAKEUP_TITLE_KEYWORD is kept as a manual
+    fallback alongside the "morning" category (not replaced by it) so a
+    title-based override still works even before the reclassification poll
+    or for a household that never uses the classifier's morning category by
+    that exact name. Falls back to the generic chime if the relevant path
+    isn't configured (see brain/config.py, local_sounds/ isn't populated in
+    a fresh clone).
     """
-    return False
-
-
-def _sound_for(item: dict) -> Path:
-    """Which sound to play before speaking `item` -- wake-up alarm (matched by
-    title, see WAKEUP_TITLE_KEYWORD) takes priority, then critical reminders,
-    then the regular reminder sound; falls back to the generic chime if the
-    relevant path isn't configured (see brain/config.py, local_sounds/ isn't
-    populated in a fresh clone).
-    """
-    title = item.get("summary", "")
-    if WAKEUP_TITLE_KEYWORD and WAKEUP_TITLE_KEYWORD.lower() in title.lower():
+    if category == "morning" or (WAKEUP_TITLE_KEYWORD and WAKEUP_TITLE_KEYWORD.lower() in title.lower()):
         return Path(WAKEUP_SOUND_PATH) if WAKEUP_SOUND_PATH else CHIME_WAV
-    if _is_critical(item):
+    if category == "critical":
         return Path(CRITICAL_REMINDER_SOUND_PATH) if CRITICAL_REMINDER_SOUND_PATH else CHIME_WAV
     return Path(REMINDER_SOUND_PATH) if REMINDER_SOUND_PATH else CHIME_WAV
 
 
-def acknowledge(item_id: str) -> bool:
-    """Call this from the (separately-built) confirmation-tool handler once a
-    household member explicitly confirms a critical reminder was handled.
-    Returns whether there was actually something pending to acknowledge (so
-    the caller can tell Claude "nothing to confirm" vs. "done").
-    """
-    with _critical_lock:
-        was_pending = _critical_pending.pop(item_id, None) is not None
-    if was_pending:
-        focus.release(Channel.ALERT)
-    return was_pending
-
-
-def _push_telegram(text: str) -> None:
-    """Best-effort text push to every allowlisted chat. A Telegram outage (or
-    the bot not being configured at all) must never block the spoken
-    reminder, hence the broad except -- this is a nice-to-have companion to
-    the speech, not the primary delivery mechanism.
-    """
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_ALLOWED_CHAT_IDS:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    for chat_id in TELEGRAM_ALLOWED_CHAT_IDS:
-        try:
-            data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
-            urllib.request.urlopen(url, data=data, timeout=5)
-        except Exception:
-            pass
-
-
-def _speak(text: str, item: dict, out_device: Device) -> None:
+def _speak(text: str, category: str | None, title: str, out_device: Device) -> None:
     focus.acquire(Channel.ALERT)
     try:
         try:
-            play_wav(_sound_for(item), out_device)
+            play_wav(_sound_for(category, title), out_device)
         except Exception:
             pass
         speak_reply(text, out_device)
@@ -184,46 +144,137 @@ def _speak(text: str, item: dict, out_device: Device) -> None:
         focus.release(Channel.ALERT)
 
 
-def _fire_critical(item: dict, item_id: str, text: str, out_device: Device) -> None:
-    """Runs in its own thread (see _fire) so a long-nagging critical reminder
-    never blocks _poll_loop from checking/firing anything else. Keeps ALERT
-    held for the whole nag duration (not toggled per-cycle) so lower-priority
-    audio can't sneak back in between nags -- released only by acknowledge()
-    or the safety-cap timeout below.
+# -- Critical-reminder pending state -----------------------------------------
+# Persisted (survives a daemon restart) rather than in-memory, since "nudge a
+# few times a day until acknowledged" needs to keep working across restarts,
+# not just within one process lifetime like the old fixed-nag-thread design
+# did. Keyed by the reminder's Google Calendar event id.
+
+
+def _load_critical_state() -> dict:
+    if not CRITICAL_STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(CRITICAL_STATE_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_critical_state(state: dict) -> None:
+    CRITICAL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CRITICAL_STATE_PATH.write_text(json.dumps(state))
+
+
+def _register_critical(item_id: str, title: str) -> None:
+    state = _load_critical_state()
+    if item_id not in state:
+        state[item_id] = {"title": title, "last_nudged_at": datetime.now().isoformat()}
+        _save_critical_state(state)
+
+
+def pending_critical_items() -> list[dict]:
+    """[{"id", "title", "last_nudged_at"}] for every critical reminder still
+    awaiting explicit acknowledgement (see acknowledge_critical) -- read by
+    brain/llm.py to decide whether to naturally bring one up this turn, and
+    by _critical_nudge_loop for the proactive spoken check-in."""
+    return [{"id": item_id, **info} for item_id, info in _load_critical_state().items()]
+
+
+def mark_critical_nudged(item_id: str) -> None:
+    state = _load_critical_state()
+    if item_id in state:
+        state[item_id]["last_nudged_at"] = datetime.now().isoformat()
+        _save_critical_state(state)
+
+
+def acknowledge_critical(query: str) -> str:
+    """Matches a pending critical reminder by title substring (case-
+    insensitive) and clears it -- called by the acknowledge_reminder tool
+    once a household member explicitly confirms it's handled, e.g. "I already
+    booked the flight." Returns a status string for Claude to confirm from."""
+    query = query.strip().lower()
+    state = _load_critical_state()
+    match_id = next((item_id for item_id, info in state.items() if query in info["title"].lower()), None)
+    if match_id is None:
+        return "status: error_not_found"
+    title = state.pop(match_id)["title"]
+    _save_critical_state(state)
+    return f"status: acknowledged, title: {title}"
+
+
+def _within_quiet_hours(now: datetime) -> bool:
+    return CRITICAL_QUIET_HOURS[0] <= now.hour < CRITICAL_QUIET_HOURS[1]
+
+
+def _critical_nudge_loop(out_device: Device) -> None:
+    """Proactive spoken check-in for still-unacknowledged critical reminders
+    -- the "a few times a day" half of the redesigned critical behavior; the
+    conversational half lives in brain/llm.py's _critical_reminders_prompt_line,
+    which shares this same last_nudged_at bookkeeping so a chat mention and a
+    proactive spoken check-in don't both fire within the same interval.
+    Skips entirely outside CRITICAL_QUIET_HOURS, and while a conversation or
+    another alert is already using the ALERT/DIALOG channel -- a live chat is
+    the more natural place for this anyway, see brain/llm.py.
     """
-    with _critical_lock:
-        _critical_pending[item_id] = item
-    focus.acquire(Channel.ALERT)
-    _push_telegram(text)
+    while True:
+        time.sleep(15 * 60)
+        now = datetime.now(_tz())
+        if not _within_quiet_hours(now):
+            continue
+        if focus.is_active(Channel.DIALOG) or focus.is_active(Channel.ALERT):
+            continue
+        for item in pending_critical_items():
+            try:
+                last_nudged = datetime.fromisoformat(item["last_nudged_at"])
+            except ValueError:
+                last_nudged = now
+            if now - last_nudged < timedelta(hours=CRITICAL_NUDGE_INTERVAL_HOURS):
+                continue
+            title = item["title"]
+            text = f"תזכורת -- טיפלת ב{title}?" if _is_hebrew(title) else f"Reminder -- have you taken care of {title}?"
+            try:
+                _speak(text, "critical", title, out_device)
+            except Exception as exc:
+                print(f"Critical nudge speak failed: {exc}", flush=True)
+            mark_critical_nudged(item["id"])
+            break  # one spoken check-in per wake-up, not a burst through the whole list
 
-    start = time.monotonic()
-    while time.monotonic() - start < CRITICAL_MAX_NAG_SECONDS:
-        with _critical_lock:
-            if item_id not in _critical_pending:
-                return  # acknowledged
-        print(f"Critical reminder still pending, re-nagging: {item.get('summary', 'Reminder')}", flush=True)
+
+# -- Reclassification ---------------------------------------------------------
+
+
+def _reclassify_new_items(cache: list[dict]) -> None:
+    """Assigns a category to anything in `cache` that doesn't have one yet --
+    catches reminders added or edited outside Mendy (the Calendar app
+    directly, or a Telegram message not routed through add_calendar_event).
+    Runs once per FETCH_INTERVAL_SECONDS refresh (the same ~5 minute cadence
+    that already picks up those external edits at all), not every
+    FIRE_INTERVAL_SECONDS scan -- classifying is an API call, no need to
+    repeat it every 20 seconds against the same still-unfired cache.
+    """
+    from . import classify
+
+    seen_groups: set[str] = set()
+    for item in cache:
+        group = gcal.event_group(item)
+        if group in seen_groups:
+            continue
+        seen_groups.add(group)
+        if gcal.category_of(item) is not None:
+            continue  # already classified (incl. "uncertain" -- already queued)
+
+        title = item.get("summary", "")
+        notes = item.get("description", "") or ""
+        category = classify.classify_reminder(title, notes)
         try:
-            play_wav(_sound_for(item), out_device)
-        except Exception:
-            pass
-        try:
-            speak_reply(text, out_device)
-        except Exception as exc:
-            print(f"Failed to speak critical reminder: {exc}", flush=True)
-
-        waited = 0.0
-        while waited < CRITICAL_NAG_INTERVAL_SECONDS:
-            with _critical_lock:
-                if item_id not in _critical_pending:
-                    return  # acknowledged mid-wait
-            time.sleep(2)
-            waited += 2
-
-    # Safety cap hit -- stop nagging regardless of acknowledgement.
-    print(f"Critical reminder hit the {CRITICAL_MAX_NAG_SECONDS}s nag cap, giving up: {item.get('summary')}", flush=True)
-    with _critical_lock:
-        _critical_pending.pop(item_id, None)
-    focus.release(Channel.ALERT)
+            gcal.set_category_for_group(group, category)
+        except gcal.CalendarError as exc:
+            print(f"Reclassification failed for {title!r}: {exc}", flush=True)
+            continue
+        print(f"Reclassified {title!r} as {category}", flush=True)
+        if category == classify.UNCERTAIN:
+            classify.queue_uncertain(group, title)
+            push_telegram(classify.uncertain_question_text(title))
 
 
 def _halacha_text(title: str) -> str | None:
@@ -268,6 +319,7 @@ def _speak_halacha_audio(episode: dict, out_device: Device) -> None:
 def _fire(item: dict, out_device: Device) -> None:
     title = item.get("summary", "Reminder")
     item_id = item.get("id")
+    category = gcal.category_of(item)
 
     if HALACHA_TITLE_KEYWORD in title:
         print(f"Daily halacha reminder firing: {title}", flush=True)
@@ -277,7 +329,7 @@ def _fire(item: dict, out_device: Device) -> None:
         if episode:
             try:
                 _speak_halacha_audio(episode, out_device)
-                _push_telegram(f"הלכה יומית: {episode['name']}")
+                push_telegram(f"הלכה יומית: {episode['name']}")
                 return
             except Exception as exc:
                 print(f"Halacha audio playback failed ({exc}), falling back to TTS", flush=True)
@@ -286,17 +338,22 @@ def _fire(item: dict, out_device: Device) -> None:
 
     text = _halacha_text(title) or (f"תזכורת: {title}" if _is_hebrew(title) else f"Reminder: {title}")
 
-    if item_id and _is_critical(item):
+    if item_id and category == "critical":
         print(f"Critical reminder firing: {title}", flush=True)
-        threading.Thread(target=_fire_critical, args=(item, item_id, text, out_device), daemon=True).start()
+        _register_critical(item_id, title)
+        try:
+            _speak(text, category, title, out_device)
+        except Exception as exc:
+            print(f"Failed to speak critical reminder: {exc}", flush=True)
+        push_telegram(text)
         return
 
     print(f"Reminder firing: {title}", flush=True)
     try:
-        _speak(text, item, out_device)
+        _speak(text, category, title, out_device)
     except Exception as exc:
         print(f"Failed to speak reminder: {exc}", flush=True)
-    _push_telegram(text)
+    push_telegram(text)
 
 
 def _fire_late(item: dict) -> None:
@@ -305,7 +362,7 @@ def _fire_late(item: dict) -> None:
     title = item.get("summary", "Reminder")
     start = _instance_start(item)
     when = start.strftime("%H:%M") if start else "?"
-    _push_telegram(f"(missed) {title} was due at {when}")
+    push_telegram(f"(missed) {title} was due at {when}")
 
 
 def _poll_loop(out_device: Device) -> None:
@@ -319,6 +376,7 @@ def _poll_loop(out_device: Device) -> None:
             try:
                 now = datetime.now(_tz())
                 cache = gcal.upcoming_between(now, now + timedelta(hours=FETCH_WINDOW_HOURS))
+                _reclassify_new_items(cache)
             except Exception as exc:
                 print(f"Reminder fetch failed: {exc}", flush=True)
             last_fetch = now_monotonic
@@ -352,12 +410,14 @@ def _poll_loop(out_device: Device) -> None:
 
 
 def start(out_device: Device) -> None:
-    """Starts the reminder poller as a daemon thread.
+    """Starts the reminder poller and the critical-nudge checker as daemon
+    threads.
 
     Best-effort by design: a missing/misconfigured calendar (brain/gcal.py
     not set up yet) must not crash the voice daemon -- reminders just won't
     fire until it is, the same tolerance brain/spotify.py extends to a
-    not-yet-authorized Spotify account. Failures inside the loop are caught
-    and logged per-iteration (see _poll_loop), not here.
+    not-yet-authorized Spotify account. Failures inside either loop are
+    caught and logged per-iteration, not here.
     """
     threading.Thread(target=_poll_loop, args=(out_device,), daemon=True).start()
+    threading.Thread(target=_critical_nudge_loop, args=(out_device,), daemon=True).start()
