@@ -53,7 +53,7 @@ import mic_leds
 from brain.audio_focus import Channel, manager as focus
 from audio_check.config import DEFAULT_CONFIG
 from audio_check.devices import Device, find_input_device, find_output_device
-from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed
+from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed, WakeWordInterrupt
 from audio_check.player import play_wav, play_wav_async
 from audio_check.recorder import SILENCE_RMS_THRESHOLD, record_until_silence
 from brain.config import WAKE_WORD_MODEL_PATH
@@ -115,7 +115,30 @@ DETECTION_THRESHOLD = 0.6  # Default threshold when music is not playing, to pre
 # word's own quieter syllables (a trailing consonant, etc.) can dip below
 # this on their own mid-utterance.
 WAKE_WORD_RMS_HISTORY_CHUNKS = 12  # ~1s of CHUNK_SAMPLES (80ms) chunks
+# How much raw audio (not just its RMS) to keep buffered while listening for
+# the wake word, so it can be handed to the recorder as a head start once one
+# fires -- covers both openWakeWord's own detection latency (it needs a
+# rolling window of context before it's confident "alexa" was said, so it
+# always fires a bit after the word actually finished) and the gap between
+# this stream closing and the recording one opening. Without this, anything
+# said with no pause right after the wake word (e.g. "Alexa, stop" in one
+# breath) fell into that combined gap and was never captured by either
+# stream. ~1.2s comfortably covers the model's typical confirmation lag with
+# margin for a slower Pi -- erring long just means a bit of the wake word's
+# own tail audio rides along into the transcription, which is harmless
+# (Whisper transcribes it, downstream matching is substring-based); erring
+# short risks still losing part of a fast command. See _listen_for_wake_word
+# and _play_wav_with_barge_in below, and record_until_silence's
+# preroll_chunks param.
+PREROLL_CHUNKS = 15
 COOLDOWN_SECONDS = 2.0  # ignore re-triggers right as we resume listening
+# How long to ignore wake-word detections right as a new recording/thinking
+# listening window opens -- covers the model's own detection lag on the wake
+# word that started (or last barged into) this turn, so its tail doesn't
+# immediately re-trigger a restart the instant the next window opens. Same
+# role as COOLDOWN_SECONDS above, just scoped to these two newer listening
+# windows rather than the main wake-word loop.
+INTERRUPT_COOLDOWN_SECONDS = 1.0
 # How long to wait for the user to start talking before giving up.
 INITIAL_QUERY_TIMEOUT = 4.0
 FOLLOW_UP_TIMEOUT = 3.5  # long enough for a real follow-up, short enough to limit exposure to ambient noise
@@ -193,12 +216,163 @@ def _load_wake_word_model() -> tuple[Model, dict[str, str]]:
     return model, {ENGLISH_WAKE_WORD: "en", HEBREW_WAKE_WORD: "he"}
 
 
+def _detect_wake_word(
+    prediction: dict[str, float],
+    wake_word_keys,
+    recent_rms: collections.deque,
+    threshold: float,
+) -> tuple[str, float] | None:
+    """Shared decision logic behind every listening window in this file:
+    given one chunk's prediction scores and a rolling RMS history, return the
+    (key, score) of whichever wake word fired, or None. A detection only
+    counts if some chunk in `recent_rms` actually reached speech level -- see
+    WAKE_WORD_RMS_HISTORY_CHUNKS above for why (quiet ambient noise can still
+    score above threshold on its own).
+    """
+    key, score = max(
+        ((k, prediction.get(k, 0.0)) for k in wake_word_keys), key=lambda pair: pair[1]
+    )
+    if score <= threshold:
+        return None
+    if recent_rms and max(recent_rms) < SILENCE_RMS_THRESHOLD:
+        return None
+    return key, score
+
+
+def _apply_interrupt(conversation_language: str, wake_word_keys, key: str) -> str:
+    """Returns the conversation language to use after an interrupt (a barge-in
+    during playback, or a restart mid-recording/mid-thinking) fired via `key`
+    -- switching it when that wake word differs from the current one, since
+    interrupting in the *other* language is exactly as clear a language
+    signal as the wake word that started this conversation (see
+    _handle_conversation's docstring). No-ops (returns it unchanged) otherwise.
+    """
+    new_language = wake_word_keys[key]
+    if new_language != conversation_language:
+        print(
+            f"Interrupt switched conversation language to {new_language!r} (via {key!r})",
+            flush=True,
+        )
+        return new_language
+    return conversation_language
+
+
+def _make_recording_interrupt_checker(model, wake_word_keys):
+    """Returns an `on_chunk` callable for record_until_silence's `on_chunk`
+    param: feeds each live chunk of the user's own recording to the (already
+    shared, never used concurrently -- see module docstring) wake-word model,
+    and raises WakeWordInterrupt the moment one fires, so the user can restart
+    what they were saying by just saying the wake word again mid-recording.
+    Reuses the recording's own single input stream instead of opening a
+    second, competing one on the same device.
+    """
+    model.reset()
+    recent_rms: collections.deque = collections.deque(maxlen=WAKE_WORD_RMS_HISTORY_CHUNKS)
+    recent_audio: collections.deque = collections.deque(maxlen=PREROLL_CHUNKS)
+    start = time.monotonic()
+
+    def on_chunk(pcm: np.ndarray) -> None:
+        recent_rms.append(float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2))))
+        recent_audio.append(pcm)
+        prediction = model.predict(pcm)
+        if time.monotonic() - start < INTERRUPT_COOLDOWN_SECONDS:
+            return
+        detected = _detect_wake_word(prediction, wake_word_keys, recent_rms, DETECTION_THRESHOLD)
+        if detected is None:
+            return
+        key, score = detected
+        print(f"Restart requested mid-recording: {key} (score={score:.2f})", flush=True)
+        raise WakeWordInterrupt(key, preroll=list(recent_audio))
+
+    return on_chunk
+
+
+class _ThinkingInterruptListener:
+    """Listens for a wake word on a background thread + dedicated input
+    stream for the duration of the transcribe/Claude/TTS-synthesis gap, when
+    no other stream is open on in_device -- lets the user restart what they
+    were saying during that "thinking" window too, not just during playback
+    or while actively recording. Can't actually cancel the in-flight network
+    calls it overlaps; the caller just discards their result once it returns
+    if `stop()` reports an interrupt (see _handle_conversation).
+
+    Must be fully stopped (its stream closed) before anything else opens a
+    stream on in_device -- e.g. the reply's own playback barge-in listener --
+    or the two streams fight over the same device.
+    """
+
+    def __init__(self, model, wake_word_keys, in_device: Device) -> None:
+        self._model = model
+        self._wake_word_keys = wake_word_keys
+        self._in_device = in_device
+        self._stop_event = threading.Event()
+        self._result: tuple[bool, str | None, list[np.ndarray]] = (False, None, [])
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "_ThinkingInterruptListener":
+        self._model.reset()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        audio_queue: queue.Queue = queue.Queue()
+
+        def callback(indata, frames, time_info, status):
+            audio_queue.put(indata[:, 0].copy())
+
+        recent_rms: collections.deque = collections.deque(maxlen=WAKE_WORD_RMS_HISTORY_CHUNKS)
+        recent_audio: collections.deque = collections.deque(maxlen=PREROLL_CHUNKS)
+        start = time.monotonic()
+        try:
+            with sd.InputStream(
+                device=self._in_device.index,
+                channels=1,
+                samplerate=SAMPLE_RATE,
+                dtype="int16",
+                blocksize=CHUNK_SAMPLES,
+                latency='high',
+                callback=callback,
+            ):
+                while not self._stop_event.is_set():
+                    try:
+                        pcm = audio_queue.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    recent_rms.append(float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2))))
+                    recent_audio.append(pcm)
+                    prediction = self._model.predict(pcm)
+                    if time.monotonic() - start < INTERRUPT_COOLDOWN_SECONDS:
+                        continue
+                    detected = _detect_wake_word(
+                        prediction, self._wake_word_keys, recent_rms, DETECTION_THRESHOLD
+                    )
+                    if detected is None:
+                        continue
+                    key, score = detected
+                    print(f"Restart requested while thinking: {key} (score={score:.2f})", flush=True)
+                    self._result = (True, key, list(recent_audio))
+                    return
+        except Exception as exc:
+            print(f"Thinking-phase interrupt listener failed: {exc!r}", file=sys.stderr, flush=True)
+
+    def stop(self) -> tuple[bool, str | None, list[np.ndarray]]:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        return self._result
+
+
 def _listen_for_wake_word(
     model: Model, wake_word_language: dict[str, str], in_device: Device, last_trigger: float
-) -> tuple[float, str]:
+) -> tuple[float, str, list[np.ndarray]]:
     """Block until any wake word is detected; return (new last_trigger time,
-    the wake word key that fired) -- the caller uses the latter to look up
-    which language that wake word selects (see _load_wake_word_model).
+    the wake word key that fired, a short buffer of raw audio right up to
+    the trigger) -- the caller uses the key to look up which language that
+    wake word selects (see _load_wake_word_model), and the audio buffer as a
+    head start for the command recording (see PREROLL_CHUNKS above and
+    record_until_silence's preroll_chunks param) so a command said with no
+    pause right after the wake word isn't lost.
 
     Runs the InputStream inside this function's `with` block so it's fully
     closed before we record the user's question -- avoids a second
@@ -218,6 +392,7 @@ def _listen_for_wake_word(
     # Reset model states before listening for a fresh wake word trigger
     model.reset()
     recent_rms: collections.deque = collections.deque(maxlen=WAKE_WORD_RMS_HISTORY_CHUNKS)
+    recent_audio: collections.deque = collections.deque(maxlen=PREROLL_CHUNKS)
 
     with sd.InputStream(
         device=in_device.index,
@@ -234,6 +409,7 @@ def _listen_for_wake_word(
             # correct) regardless of the RMS gate below -- only the decision
             # to *act* on a firing score is gated, not the model's own input.
             recent_rms.append(float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2))))
+            recent_audio.append(pcm)
             prediction = model.predict(pcm)
             now = time.monotonic()
             current_threshold = 0.35 if spotify_is_playing else DETECTION_THRESHOLD
@@ -248,7 +424,7 @@ def _listen_for_wake_word(
                         )
                         continue
                     print(f"Wake word detected: {key} (score={score:.2f})", flush=True)
-                    return now, key
+                    return now, key, list(recent_audio)
 
 
 def _play_wav_with_barge_in(
@@ -257,13 +433,18 @@ def _play_wav_with_barge_in(
     out_device: Device,
     model,
     wake_word_keys,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, list[np.ndarray]]:
     """Plays a WAV file on out_device while listening to in_device for the wake word.
-    Returns (barge_in, triggered_key) -- triggered_key is which wake word
-    interrupted (so the caller can switch the conversation's language if it
-    differs from the one that started it -- barging in with the other
+    Returns (barge_in, triggered_key, preroll) -- triggered_key is which wake
+    word interrupted (so the caller can switch the conversation's language if
+    it differs from the one that started it -- barging in with the other
     language's wake word is exactly as clear a language signal as the
-    original wake word was), or None if there was no barge-in.
+    original wake word was), or None if there was no barge-in. `preroll` is a
+    short buffer of raw audio right up to the barge-in (empty if there was
+    none) -- same purpose as _listen_for_wake_word's own preroll: a command
+    barged in with no pause (e.g. "Alexa, stop" interrupting a reply)
+    shouldn't be lost in the gap before the next recording stream opens. See
+    PREROLL_CHUNKS and record_until_silence's preroll_chunks param.
     """
     from audio_check.player import _load_wav, _playback_lock
     try:
@@ -271,7 +452,7 @@ def _play_wav_with_barge_in(
         audio, sample_rate = _load_wav(filepath, target_sr=target_sr)
     except Exception as exc:
         print(f"Error loading WAV for playback: {exc}", file=sys.stderr)
-        return False
+        return False, None, []
 
     # Reset the stateful wake word model's hidden states so it forgets the previous trigger
     model.reset()
@@ -295,6 +476,7 @@ def _play_wav_with_barge_in(
     # its own schedule.
     barge_in = False
     triggered_key = None
+    recent_audio: collections.deque = collections.deque(maxlen=PREROLL_CHUNKS)
     with _playback_lock:
         # Start playback asynchronously with higher latency to prevent CPU/GIL starvation static noise
         sd.play(audio, samplerate=sample_rate, device=out_device.index, latency='high')
@@ -320,6 +502,7 @@ def _play_wav_with_barge_in(
                     break
                 try:
                     pcm = audio_queue.get(timeout=0.1)
+                    recent_audio.append(pcm)
                     prediction = model.predict(pcm)
                     # Any wake word interrupts -- not just whichever one started
                     # this conversation, since the user may address the assistant
@@ -341,7 +524,7 @@ def _play_wav_with_barge_in(
 
         if not barge_in:
             sd.wait()
-    return barge_in, triggered_key
+    return barge_in, triggered_key, (list(recent_audio) if barge_in else [])
 
 
 def _handle_conversation(
@@ -351,6 +534,7 @@ def _handle_conversation(
     wake_word_keys,
     initial_history: list[dict] | None = None,
     conversation_language: str | None = None,
+    initial_preroll: list[np.ndarray] | None = None,
 ) -> list[dict] | None:
     """Returns `history` as it stood when the conversation ended, so `main()`
     can offer it to the *next* call as a continuation if a fresh wake word
@@ -358,13 +542,27 @@ def _handle_conversation(
     always starts blank.
 
     `conversation_language` (from which wake word triggered this call -- see
-    _load_wake_word_model) is applied to every turn below -- except that a
-    barge-in with the *other* language's wake word switches it for the rest
-    of this same call, exactly as if a fresh wake word had started a new
-    conversation (see the barge_in_key handling below); it never drifts any
-    other way mid-stream. This also means every turn only needs one Groq
-    transcription call instead of two (see brain/stt.py's transcribe()
-    docstring for the dual-detect fallback this skips).
+    _load_wake_word_model) is applied to every turn below -- except that
+    interrupting with the *other* language's wake word switches it for the
+    rest of this same call, exactly as if a fresh wake word had started a new
+    conversation (see _apply_interrupt); it never drifts any other way
+    mid-stream. This also means every turn only needs one Groq transcription
+    call instead of two (see brain/stt.py's transcribe() docstring for the
+    dual-detect fallback this skips).
+
+    The wake word can interrupt at any phase, not just during reply playback:
+    saying it again while actively recording a question (see
+    _make_recording_interrupt_checker) or during the transcribe/Claude/TTS-
+    synthesis gap (see _ThinkingInterruptListener) both abandon whatever was
+    in flight and restart listening fresh, same as a mid-reply barge-in --
+    lets someone who misspoke or changed their mind redo it without waiting.
+
+    `initial_preroll`, if given, is the raw audio buffer _listen_for_wake_word
+    captured right up to the wake word that triggered this call (see
+    PREROLL_CHUNKS) -- handed to the very next recording as a head start so a
+    command said with no pause right after the wake word isn't lost. Only
+    applies to that one recording; a fresh buffer from a mid-reply barge-in
+    (see pending_preroll below) takes over for whichever turn follows that.
     """
     # Acquire the DIALOG audio-focus channel for the duration of this
     # conversation. This pauses (and snapshots) any Spotify music so the mic
@@ -377,6 +575,7 @@ def _handle_conversation(
     errored = False
 
     history = initial_history
+    pending_preroll = initial_preroll
     timeout = INITIAL_QUERY_TIMEOUT
     turns = 0
     while turns < MAX_FOLLOW_UP_TURNS:
@@ -397,21 +596,44 @@ def _handle_conversation(
             # voice. This chime is short, fixed, and known in advance, and is
             # never treated as speech itself -- only real speech detected
             # right after it gets kept.
-            mic_leds.enter_listening()
             t0 = time.monotonic()
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                record_future = pool.submit(
-                    record_until_silence,
-                    in_device,
-                    query_wav,
-                    SAMPLE_RATE,
-                    1,
-                    initial_timeout=timeout,
-                    lead_in_seconds=ACK_DURATION_SECONDS,
-                )
-                ack_future = pool.submit(play_wav, ACK_WAV, out_device)
-                recorded = record_future.result()
-                ack_future.result()
+            while True:
+                mic_leds.enter_listening()
+                # Feeds this recording's own live audio to the wake-word
+                # model as it comes in (see _make_recording_interrupt_checker)
+                # instead of opening a second input stream -- lets the user
+                # restart what they were saying by repeating the wake word
+                # mid-recording, not just during playback.
+                interrupt_checker = _make_recording_interrupt_checker(model, wake_word_keys)
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    record_future = pool.submit(
+                        record_until_silence,
+                        in_device,
+                        query_wav,
+                        SAMPLE_RATE,
+                        1,
+                        initial_timeout=timeout,
+                        lead_in_seconds=ACK_DURATION_SECONDS,
+                        preroll_chunks=pending_preroll,
+                        on_chunk=interrupt_checker,
+                    )
+                    ack_future = pool.submit(play_wav, ACK_WAV, out_device)
+                    try:
+                        recorded = record_future.result()
+                    except WakeWordInterrupt as exc:
+                        ack_future.result()
+                        print(f"Restarting recording (interrupted by {exc.key!r})", flush=True)
+                        pending_preroll = exc.preroll
+                        conversation_language = _apply_interrupt(
+                            conversation_language, wake_word_keys, exc.key
+                        )
+                        timeout = INITIAL_QUERY_TIMEOUT
+                        continue
+                    ack_future.result()
+                break
+            # Only applies to the recording just submitted above -- a normal
+            # follow-up turn (no wake word/barge-in involved) starts cold.
+            pending_preroll = None
             t1 = time.monotonic()
             if recorded is None:
                 break  # nothing said -- end the conversation, back to wake-word listening
@@ -424,74 +646,107 @@ def _handle_conversation(
             mic_leds.enter_thinking()
             play_wav_async(THINKING_WAV, out_device)
 
-            # Every turn (not just the first) uses the deterministic language
-            # from whichever wake word triggered this conversation -- see
-            # this function's docstring and brain/stt.py's transcribe().
-            stt_mode = "wake_word" if conversation_language else "dual"
-            text, language = transcribe(query_wav, conversation_language=conversation_language)
-            t2 = time.monotonic()
-            print(f"Heard ({language}): {text}", flush=True)
-            if not text:
-                break
+            # Listens on a background thread for the whole transcribe/Claude/
+            # TTS-synthesis gap -- previously nothing listened at all during
+            # this window, so a wake word said here (e.g. to restart what was
+            # just asked) went completely unheard. Must be stopped (its
+            # stream closed) before the reply's own playback barge-in opens
+            # a second one below.
+            thinking_interrupt = _ThinkingInterruptListener(model, wake_word_keys, in_device).start()
+            try:
+                # Every turn (not just the first) uses the deterministic
+                # language from whichever wake word triggered this
+                # conversation -- see this function's docstring and
+                # brain/stt.py's transcribe().
+                stt_mode = "wake_word" if conversation_language else "dual"
+                text, language = transcribe(query_wav, conversation_language=conversation_language)
+                t2 = time.monotonic()
+                print(f"Heard ({language}): {text}", flush=True)
+                if not text:
+                    break
 
-            reply, history, ask_timeline = ask(
-                text, language, history,
-                out_device=out_device,
-            )
-            t3 = time.monotonic()
-            print(f"Claude: {reply}", flush=True)
+                reply, history, ask_timeline = ask(
+                    text, language, history,
+                    out_device=out_device,
+                )
+                t3 = time.monotonic()
+                print(f"Claude: {reply}", flush=True)
 
-            # Decide whether to suppress the pre-conversation snapshot resume
-            # after this conversation. Tell "stop the music" apart from "stop
-            # the alarm": the latter must NOT suppress the music resume.
-            #   * If we woke up on a ringing alarm, any "stop" targets the alarm
-            #     -> leave the music to resume (dialog_opened_on_alert short-
-            #     circuits everything else).
-            #   * An explicit stop_music tool -> the user stopped the music.
-            #   * A bare "stop" with no timer/alarm in play -> stop the music.
-            #   * cancel_timer -> stops the timer only; music still resumes.
-            #   * play_music/skip_track/seek_music ran -> the user just
-            #     deliberately changed what's playing; resuming the snapshot
-            #     from *before* this conversation started would silently
-            #     revert that change. Confirmed live: "next song" moved to a
-            #     new track, then jumped back to the original song when the
-            #     conversation ended and the stale snapshot resumed over it.
-            said_stop = contains_stop_word(text or "")
-            stop_music_ran = any("stop_music" in stage for stage, _ in ask_timeline)
-            cancel_timer_ran = any("cancel_timer" in stage for stage, _ in ask_timeline)
-            content_changed_ran = any(
-                stage.startswith("tool:") and any(kw in stage for kw in ("play_music", "skip_track", "seek_music"))
-                for stage, _ in ask_timeline
-            )
-            if focus.dialog_opened_on_alert():
-                pass
-            elif stop_music_ran or content_changed_ran:
-                focus.suppress_resume()
-            elif said_stop and not cancel_timer_ran and not focus.alert_active():
-                focus.suppress_resume()
+                # Decide whether to suppress the pre-conversation snapshot resume
+                # after this conversation. Tell "stop the music" apart from "stop
+                # the alarm": the latter must NOT suppress the music resume.
+                #   * If we woke up on a ringing alarm, any "stop" targets the alarm
+                #     -> leave the music to resume (dialog_opened_on_alert short-
+                #     circuits everything else).
+                #   * An explicit stop_music tool -> the user stopped the music.
+                #   * A bare "stop" with no timer/alarm in play -> stop the music.
+                #   * cancel_timer -> stops the timer only; music still resumes.
+                #   * play_music/skip_track/seek_music ran -> the user just
+                #     deliberately changed what's playing; resuming the snapshot
+                #     from *before* this conversation started would silently
+                #     revert that change. Confirmed live: "next song" moved to a
+                #     new track, then jumped back to the original song when the
+                #     conversation ended and the stale snapshot resumed over it.
+                said_stop = contains_stop_word(text or "")
+                stop_music_ran = any("stop_music" in stage for stage, _ in ask_timeline)
+                cancel_timer_ran = any("cancel_timer" in stage for stage, _ in ask_timeline)
+                content_changed_ran = any(
+                    stage.startswith("tool:") and any(kw in stage for kw in ("play_music", "skip_track", "seek_music"))
+                    for stage, _ in ask_timeline
+                )
+                if focus.dialog_opened_on_alert():
+                    pass
+                elif stop_music_ran or content_changed_ran:
+                    focus.suppress_resume()
+                elif said_stop and not cancel_timer_ran and not focus.alert_active():
+                    focus.suppress_resume()
 
-            # Synthesize reply to WAV chunks -- pass the conversation's
-            # actual language explicitly (ask() now guarantees the reply
-            # matches it) rather than letting speak_reply_chunks re-detect
-            # from the text, which can be fooled by a quoted phrase.
-            chunks, t_first_audio = speak_reply_chunks(reply, language=language)
+                # Synthesize reply to WAV chunks -- pass the conversation's
+                # actual language explicitly (ask() now guarantees the reply
+                # matches it) rather than letting speak_reply_chunks re-detect
+                # from the text, which can be fooled by a quoted phrase. Still
+                # covered by the thinking-phase interrupt listener: synthesis
+                # is a blocking network call too, and the user restarting
+                # mid-synthesis is exactly as valid as during transcribe/ask.
+                chunks, t_first_audio = speak_reply_chunks(reply, language=language)
+            finally:
+                # Must be fully stopped (stream closed) before the playback
+                # barge-in listener below opens its own -- see
+                # _ThinkingInterruptListener's docstring.
+                thinking_interrupted, thinking_interrupt_key, thinking_interrupt_preroll = (
+                    thinking_interrupt.stop()
+                )
+
+            if thinking_interrupted:
+                print(
+                    f"Discarding turn (interrupted while thinking by {thinking_interrupt_key!r})",
+                    flush=True,
+                )
+                pending_preroll = thinking_interrupt_preroll
+                conversation_language = _apply_interrupt(
+                    conversation_language, wake_word_keys, thinking_interrupt_key
+                )
+                turns -= 1  # a restart, not a completed turn -- doesn't count against the cap
+                timeout = INITIAL_QUERY_TIMEOUT
+                continue
 
             # Play each chunk with barge-in
             mic_leds.enter_speaking()
             barge_in = False
             for wav in chunks:
-                barge_in, barge_in_key = _play_wav_with_barge_in(wav, in_device, out_device, model, wake_word_keys)
+                barge_in, barge_in_key, barge_in_preroll = _play_wav_with_barge_in(
+                    wav, in_device, out_device, model, wake_word_keys
+                )
                 wav.unlink(missing_ok=True)
-                if barge_in and wake_word_keys[barge_in_key] != conversation_language:
-                    # Barging in with the *other* language's wake word is
-                    # exactly as clear a language signal as the wake word
-                    # that started this conversation -- switch for the rest
-                    # of it, same as a fresh wake word would from main().
-                    print(
-                        f"Barge-in switched conversation language to {wake_word_keys[barge_in_key]!r} (via {barge_in_key!r})",
-                        flush=True,
+                if barge_in:
+                    # Applies to the recording the next loop iteration starts
+                    # (a barge-in always ends this reply and goes straight
+                    # into listening for the interrupting command) -- same
+                    # reasoning as initial_preroll above.
+                    pending_preroll = barge_in_preroll
+                    conversation_language = _apply_interrupt(
+                        conversation_language, wake_word_keys, barge_in_key
                     )
-                    conversation_language = wake_word_keys[barge_in_key]
                 if focus.is_preempted(Channel.DIALOG):
                     preempted = True
                     break
@@ -630,7 +885,9 @@ def _main() -> None:
 
     while True:
         try:
-            last_trigger, triggered_key = _listen_for_wake_word(model, wake_word_language, in_device, last_trigger)
+            last_trigger, triggered_key, preroll_chunks = _listen_for_wake_word(
+                model, wake_word_language, in_device, last_trigger
+            )
         except Exception as exc:
             # Unlike _handle_conversation (which already has its own broad
             # except below), this call had no error recovery at all -- any
@@ -653,6 +910,7 @@ def _main() -> None:
         last_history = _handle_conversation(
             in_device, out_device, model, wake_word_language, initial_history,
             conversation_language=wake_word_language[triggered_key],
+            initial_preroll=preroll_chunks,
         )
         last_conversation_end = time.monotonic()
         last_trigger = time.monotonic()  # restart cooldown from when we resume listening

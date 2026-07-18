@@ -4,6 +4,7 @@ import queue
 import time
 import wave
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import sounddevice as sd
@@ -161,6 +162,8 @@ def record_until_silence(
     silence_duration: float = 1.2,
     max_seconds: float = 15.0,
     lead_in_seconds: float = 0.0,
+    preroll_chunks: list[np.ndarray] | None = None,
+    on_chunk: Callable[[np.ndarray], None] | None = None,
 ) -> Path | None:
     """Record until the speaker falls silent, instead of a fixed duration.
 
@@ -175,10 +178,30 @@ def record_until_silence(
     isn't clipped, while the chime's own sound doesn't get mistaken for
     speech (see wake_word_daemon.py's caller).
 
+    `preroll_chunks`, if given, is audio already captured *before this stream
+    even existed* -- e.g. wake_word_daemon.py's short rolling buffer of
+    whatever was said right up to the moment a wake word fired. Unlike
+    lead_in_seconds, this isn't blindly kept -- it may or may not actually
+    contain speech, so it's run through the same onset-confirmation check as
+    live audio before the stream opens. This closes a different gap than
+    lead_in_seconds: a command said with no pause right after the wake word
+    (e.g. "Alexa, stop" in one breath) would otherwise fall entirely between
+    the wake-word stream closing and this one opening, never captured by
+    either.
+
     Returns None (and writes no file) if no speech is detected at all within
     `initial_timeout` -- lets callers distinguish "they said something and
     finished" from "they didn't say anything," e.g. for deciding whether a
     multi-turn conversation has ended.
+
+    `on_chunk`, if given, is called with every live chunk pulled from this
+    stream (not `preroll_chunks` -- those predate the stream and would just
+    replay whatever already-known trigger put them there) before any silence
+    detection runs on it. It exists so a caller can feed the same audio to a
+    wake-word model without a second, competing input stream on the same
+    device -- see wake_word_daemon.py's mid-recording restart handling. It's
+    expected to raise (e.g. WakeWordInterrupt) to abort the recording early;
+    the stream is still closed via the `finally` below either way.
     """
     channels = min(channels, device.max_input_channels) or 1
     audio_queue: queue.Queue = queue.Queue()
@@ -206,12 +229,59 @@ def record_until_silence(
     min_speech_run_chunks = max(1, round(MIN_SPEECH_RUN_SECONDS / chunk_duration))
     min_onset_chunks = max(1, round(MIN_SPEECH_ONSET_SECONDS / chunk_duration))
 
+    # Preroll is audio already captured before this stream even existed, so
+    # it's processed before opening one -- doesn't compete with max_seconds/
+    # initial_timeout, since none of that time has actually elapsed since
+    # this call started. Run through the same onset-confirmation logic as
+    # live audio below (not blindly kept like lead_in_seconds), sharing the
+    # same consecutive_loud_chunks/pending_speech_buffer/speech_started state
+    # so a loud run that started here and continues into live audio is
+    # tracked continuously, not reset.
+    for chunk in preroll_chunks or []:
+        rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+        is_loud = rms > SILENCE_RMS_THRESHOLD
+        consecutive_loud_chunks = consecutive_loud_chunks + 1 if is_loud else 0
+
+        if speech_started:
+            # Once onset is confirmed (below), every remaining preroll chunk
+            # must be kept unconditionally, same as the live loop's own
+            # `if speech_started: chunks.append(chunk)` -- a brief quiet dip
+            # here (e.g. the natural gap between the wake word and the next
+            # word) must NOT be able to wipe audio that's already part of a
+            # continuous, confirmed utterance. Feeding it back through the
+            # is_loud-gated onset logic below was exactly that bug: confirmed
+            # live, a quiet chunk between "Alexa" and "play" during preroll
+            # cleared pending_speech_buffer before the rest of "play me the
+            # song" could be flushed into `chunks`, silently dropping it.
+            chunks.append(chunk)
+            continue
+
+        if is_loud:
+            pending_speech_buffer.append(chunk)
+        else:
+            pending_speech_buffer = []
+        if consecutive_loud_chunks >= min_onset_chunks:
+            chunks.extend(pending_speech_buffer)
+            pending_speech_buffer = []
+            speech_started = True
+
     stream = _open_input_stream(device, channels, sample_rate, callback)
     try:
         while elapsed < max_seconds:
             chunk = audio_queue.get()
+            if on_chunk is not None:
+                on_chunk(chunk)
 
-            if lead_in_elapsed < lead_in_seconds:
+            # Once real speech is confirmed (from preroll above, or from a
+            # live onset below), the lead-in window no longer serves a
+            # purpose -- it exists solely to stop a known, concurrently
+            # playing chime from being mistaken for speech *onset*. Without
+            # this guard, live chunks arriving during what would still be the
+            # chime's window would fall into lead_in_buffer, which is only
+            # ever folded into `chunks` from the not-yet-started branch below
+            # -- with speech already started, that fold-in never runs again,
+            # silently dropping those chunks instead of recording them.
+            if not speech_started and lead_in_elapsed < lead_in_seconds:
                 lead_in_elapsed += chunk_duration
                 lead_in_buffer.append(chunk)
                 continue
