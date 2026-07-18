@@ -19,12 +19,21 @@ from .language import HEBREW_RE
 # quick/quiet utterance of this very common question was consistently
 # misheard as the English name "Masha" (see the defensive correction below
 # for the cases that still get through anyway).
+#
+# Deliberately NOT prefixed with a "שאלה נפוצה:" ("common question:") label
+# like an earlier version of this prompt had -- confirmed that exact label
+# phrase was what Whisper hallucinated back verbatim as the entire
+# "transcription" on quiet/unclear audio (Whisper's prompt is conditioning
+# context, not just a vocabulary hint, and it can echo distinctive prompt
+# text instead of admitting the audio wasn't clear speech). "שאלה נפוצה" is
+# also now in _HALLUCINATION_PHRASES below as defense in depth, but the real
+# fix is not handing the model an easily-echoable phrase in the first place.
 _FAMILY_NAME_PROMPTS = {
     "en": f"Family members: {HOUSEHOLD_FAMILY_NAMES_EN}." if HOUSEHOLD_FAMILY_NAMES_EN else None,
     "he": (
-        f"בני המשפחה: {HOUSEHOLD_FAMILY_NAMES_HE}. שאלה נפוצה: מה השעה?"
+        f"בני המשפחה: {HOUSEHOLD_FAMILY_NAMES_HE}. מה השעה?"
         if HOUSEHOLD_FAMILY_NAMES_HE
-        else "שאלה נפוצה: מה השעה?"
+        else "מה השעה?"
     ),
 }
 
@@ -61,6 +70,11 @@ def _is_sound_effect_caption(text: str) -> bool:
 _HALLUCINATION_PHRASES = {
     "thank you", "thanks for watching", "thank you for watching", "bye", "you", "i'm sorry",
     "תודה", "תודה רבה", "תודה שצפיתם", "beep", "beep beep", "beep beep beep",
+    # "common question" -- not a real thing anyone would say aloud; was
+    # getting echoed back from the Hebrew prompt's own conditioning text on
+    # quiet/unclear audio before that prompt was reworded (see
+    # _FAMILY_NAME_PROMPTS above). Kept here too as defense in depth.
+    "שאלה נפוצה",
 }
 
 
