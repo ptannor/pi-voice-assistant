@@ -176,17 +176,35 @@ def _active_device_id(sp) -> str | None:
         for device in devices:
             name = device.get("name", "").lower()
             if name and (host_hint in name or name in host_hint):
+                print(f"Spotify device: '{device['name']}' (hostname match)", flush=True)
                 return device["id"]
 
     if SPOTIFY_DEVICE_NAME:
         for device in devices:
             if SPOTIFY_DEVICE_NAME.lower() in device.get("name", "").lower():
+                print(f"Spotify device: '{device['name']}' (SPOTIFY_DEVICE_NAME match)", flush=True)
                 return device["id"]
 
     for device in devices:
         if device.get("is_active"):
+            print(f"Spotify device: '{device['name']}' (is_active)", flush=True)
             return device["id"]
 
+    # No SPOTIFY_DEVICE_NAME configured and nothing matched by hostname or
+    # is_active -- picking an arbitrary device is exactly the previously-
+    # confirmed failure mode this function's docstring describes (playback
+    # landing on some other household device, not the one running this
+    # assistant). Loud on purpose: this is silent-success from Claude's own
+    # side (see brain/llm.py's force-silent-on-"status: playing" behavior),
+    # so this print is the only place that failure becomes visible at all.
+    print(
+        f"Spotify: no device matched hostname/SPOTIFY_DEVICE_NAME/is_active -- "
+        f"falling back to an arbitrary device: '{devices[0]['name']}'. If playback "
+        f"isn't audible, set SPOTIFY_DEVICE_NAME in .pi-config to this machine's "
+        f"actual Spotify Connect device name.",
+        file=sys.stderr,
+        flush=True,
+    )
     return devices[0]["id"]
 
 
@@ -376,6 +394,11 @@ def play(query: str) -> str:
                 show = sp.show(show_id)
                 name = show["name"]
                 artists = show.get("publisher", "Podcast")
+            elif uri.startswith("spotify:playlist:"):
+                playlist_id = uri.split(":")[-1]
+                playlist = sp.playlist(playlist_id, fields="name,owner.display_name")
+                name = playlist["name"]
+                artists = playlist.get("owner", {}).get("display_name", "Spotify")
             else:
                 name = "Spotify item"
                 artists = ""
@@ -758,10 +781,19 @@ def search_track(query: str) -> str:
     try:
         cleaned_query = _clean_hebrew_query(query)
         search_query = cleaned_query if cleaned_query else query
-        results = sp.search(q=search_query, type="track,episode,show", limit=5)
-        
+        # Playlists are only searched for on demand (not merged into every
+        # search) -- confirmed a real gap: with no playlist type at all, "play
+        # a playlist by X" could never surface one, so the caller had nothing
+        # to hand play_music but a single track, even though play() already
+        # supports playing a playlist via its context_uri once given one.
+        is_playlist_intent = any(
+            w in query.lower() for w in ("playlist", "פלייליסט", "רשימת השמעה")
+        )
+        search_types = "track,episode,show,playlist" if is_playlist_intent else "track,episode,show"
+        results = sp.search(q=search_query, type=search_types, limit=5)
+
         candidates = []
-        
+
         # 1. Tracks
         tracks = results.get("tracks", {}).get("items", [])
         for item in tracks[:3]:
@@ -773,7 +805,7 @@ def search_track(query: str) -> str:
                 "popularity": item.get("popularity", 0),
                 "uri": item["uri"]
             })
-            
+
         # 2. Episodes
         episodes = results.get("episodes", {}).get("items", [])
         for item in episodes[:3]:
@@ -797,12 +829,30 @@ def search_track(query: str) -> str:
                 "popularity": 0,
                 "uri": item["uri"]
             })
-            
-        # Prioritize episodes/shows if query has podcast intent
+
+        # 4. Playlists (only searched for above when is_playlist_intent)
+        playlists = results.get("playlists", {}).get("items", []) or []
+        for item in playlists[:3]:
+            if item is None:  # Spotify's search API can return null slots here
+                continue
+            owner = item.get("owner", {}).get("display_name", "Spotify")
+            candidates.append({
+                "name": item["name"],
+                "artist": owner,
+                "type": "playlist",
+                "popularity": 0,
+                "uri": item["uri"]
+            })
+
+        # Prioritize episodes/shows if query has podcast intent, or playlists
+        # if it has playlist intent -- either way, put the type the user
+        # actually asked for ahead of the default track results.
         is_podcast_intent = any(w in query.lower() for w in ("פודקאסט", "פודקסט", "podcast", "פרק", "episode", "תוכנית", "תכנית"))
         if is_podcast_intent:
             candidates.sort(key=lambda c: 0 if c["type"] in ("episode", "show") else 1)
-            
+        elif is_playlist_intent:
+            candidates.sort(key=lambda c: 0 if c["type"] == "playlist" else 1)
+
         if not candidates:
             return "status: empty_results"
             
