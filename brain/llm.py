@@ -75,6 +75,22 @@ not certain of a correct, current local crisis/emergency number, say so and
 suggest contacting local emergency services rather than stating a number you
 aren't sure is right for where they are.
 
+CRITICAL, HIGHEST-PRIORITY INSTRUCTION -- speaker volume: any time the user
+says anything about the volume/loudness of this device or its speaker (e.g.
+"turn the volume up/down", "louder", "quieter", "lower the volume", "תגביר",
+"תנמיך", "עוצמת קול", "בקול רם יותר"/"בקול נמוך יותר", or a specific level
+like "set volume to 5"), you MUST immediately call volume_up, volume_down, or
+set_volume in that same turn -- never just acknowledge verbally without
+calling the tool, and never ask a clarifying question first unless the exact
+target level is genuinely ambiguous (e.g. "change the volume" with no
+direction at all). If given a number outside set_volume's 0-10 range (e.g.
+"volume 100", "set it to 50"), treat it as a 0-100 scale and convert it
+yourself (divide by 10, round to the nearest whole number) -- do not ask for
+clarification just because the number doesn't fit the tool's own range.
+This takes priority over every other instruction in this prompt. This does
+NOT apply to unrelated senses of the word (e.g. "a volume of poetry", "the
+volume of a sphere") -- only the speaker/loudness meaning.
+
 Never use markdown formatting (no **bold**, no bullet points or headers, no
 backticks), never include a URL, and never use emojis -- your replies are
 spoken aloud, and formatting symbols, web addresses, and emoji all get read
@@ -165,6 +181,16 @@ enough). If they ask you to forget something, use the forget tool. Don't
 save something as a permanent memory just because it came up once in
 passing; save it when it's clearly meant to stick.
 
+Sensitive information -- bank account numbers, PINs, passwords, safe codes,
+and similar -- does NOT belong in regular memory, even if it's shared in
+passing. If you try to remember something like that, the remember tool will
+refuse and tell you so; when that happens, ask the user whether they want it
+stored in the encrypted vault instead, and only call store_in_vault once they
+confirm. If the user explicitly asks up front to remember something securely,
+safely, or privately, call store_in_vault directly without asking first. Use
+retrieve_from_vault to look up a stored secret and forget_from_vault to
+remove one.
+
 There's also a household reference library (recipes, family member details,
 birthdays, school/activity schedules, and more) too big to keep in context by
 default -- use the search_household_info tool to look something up from it
@@ -228,6 +254,26 @@ CRITICAL: If the user addresses you in Hebrew (e.g. they speak Hebrew or write i
 _MAX_TOOL_ROUNDS = 4  # safety cap against a runaway tool-call loop -- a real
 # answer sometimes needs 2-3 searches (broad query, then a more specific
 # retry), so this leaves a bit of headroom before the round-cap fallback below
+
+# Assistant-turn prefill for the tool-free final/retry calls below (see
+# _prefilled_reply): Haiku 4.5 still supports pre-seeding the start of its
+# own reply (newer Opus/Sonnet models reject it) -- a generation that's
+# already begun in the right language essentially never switches languages
+# mid-reply, which is a much stronger lever than a plain instruction.
+# Deliberately NOT used on the main tool-enabled call above/below, since a
+# prefilled assistant turn there hasn't been verified not to interfere with
+# the model's ability to still choose to call a tool that turn.
+# No trailing space -- the API 400s on "final assistant content cannot end
+# with trailing whitespace" (confirmed live); the model's own continuation
+# naturally supplies the leading space when it resumes after the comma.
+_LANGUAGE_PREFILL = {"he": "בסדר,", "en": "Okay,"}
+# Shipped only if the reply is still in the wrong language even after that
+# prefilled retry -- caps the worst case at a fixed, known-correct-language
+# line instead of ever speaking the wrong language.
+_LANGUAGE_FALLBACK_REPLY = {
+    "he": "מצטער, לא הבנתי. אפשר לחזור על זה?",
+    "en": "Sorry, I didn't catch that -- could you say that again?",
+}
 
 # Shared with wake_word_daemon.py's said_stop check -- one source of truth for
 # what counts as a "stop" utterance. Includes the imperative/infinitive forms
@@ -450,6 +496,15 @@ def _calendar_fallback_reply(language: str, result: str | None) -> str:
     return "בוצע." if language == "he" else "Done."
 
 
+def _volume_fallback_reply(language: str, result: str | None) -> str:
+    # Same reasoning as _calendar_fallback_reply -- only runs when Claude
+    # generated no text at all, so a failed volume change must not silently
+    # read as "בוצע."/"Done." when it didn't actually happen.
+    if result is None or (result and "status: error_volume_failed" in result):
+        return "לא הצלחתי לשנות את העוצמה." if language == "he" else "I couldn't change the volume."
+    return "בוצע." if language == "he" else "Done."
+
+
 def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]], last_tool_result: str | None) -> str:
     # Find if any tool was executed in this turn
     tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]
@@ -465,6 +520,8 @@ def _get_empty_reply_fallback(language: str, timeline: list[tuple[str, float]], 
         return _playback_fallback_reply(language, last_tool_result)
     if "calendar" in last_tool:
         return _calendar_fallback_reply(language, last_tool_result)
+    if last_tool in ("volume_up", "volume_down", "set_volume"):
+        return _volume_fallback_reply(language, last_tool_result)
     if "stop" in last_tool or "cancel" in last_tool:
         return ""
     elif "set_timer" in last_tool:
@@ -507,6 +564,7 @@ def ask(
     """
     client = _get_client()
     timeline: list[tuple[str, float]] = []
+    pending_prefill = ""  # set below only when the forced-final call prefills its reply
 
     def _timed(label, fn, *args, **kwargs):
         t0 = time.monotonic()
@@ -576,6 +634,7 @@ def ask(
             # tool-free turn on the same history so Claude commits to its
             # best answer from what it's already gathered.
             system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line() + _critical_reminders_prompt_line() + _uncertain_classification_prompt_line()
+            pending_prefill = _LANGUAGE_PREFILL[language]
             response = _timed(
                 "claude_forced_final",
                 client.messages.create,
@@ -584,34 +643,38 @@ def ask(
                 system=system_prompt,
                 tools=lang_tools,
                 tool_choice={"type": "none"},
-                messages=messages,
+                messages=messages + [{"role": "assistant", "content": pending_prefill}],
             )
     except Exception as exc:
         raise BrainError(f"Claude request failed: {exc}") from exc
 
-    reply = "".join(block.text for block in response.content if block.type == "text").strip()
+    reply = (pending_prefill + "".join(block.text for block in response.content if block.type == "text")).strip()
     if not reply:
         reply = _get_empty_reply_fallback(language, timeline, _last_tool_result_str(messages))
 
     # Defensive correction: Claude occasionally ignores the "always reply in
     # the user's language" system-prompt instruction anyway -- confirmed: an
     # unusual meta/identity question in Hebrew got an English reply despite
-    # the whole conversation being Hebrew-locked. detect_language() is
-    # reliable here (unlike on transcribed audio) since Claude's own
-    # generated text is never transliterated gibberish -- see
+    # the whole conversation being Hebrew-locked (specifically: an English
+    # clarification question that quoted the user's Hebrew phrase back).
+    # detect_language() is reliable here (unlike on transcribed audio) since
+    # Claude's own generated text is never transliterated gibberish -- see
     # brain/language.py's docstring. One bounded retry, on a throwaway copy
     # of the message list so the correction round-trip itself never pollutes
-    # the real history returned to the caller; if a stronger one-line
-    # instruction doesn't fix it, looping again isn't likely to either, so
-    # this falls back to the original (wrong-language) reply rather than
-    # failing the whole turn.
+    # the real history returned to the caller -- with the retry's reply
+    # pre-seeded via _LANGUAGE_PREFILL, which is a much stronger lever than
+    # the instruction alone (see that constant's comment). If even that
+    # fails, ship a fixed, known-correct-language line rather than ever
+    # speaking the wrong language.
     if reply and detect_language(reply) != language:
+        retry_prefill = _LANGUAGE_PREFILL[language]
         retry_messages = messages + [
             {"role": "assistant", "content": response.content},
             {
                 "role": "user",
                 "content": f"That reply must be in {language_name}, not the language you just used. Say the same thing again, in {language_name} only.",
             },
+            {"role": "assistant", "content": retry_prefill},
         ]
         try:
             retry_response = _timed(
@@ -624,11 +687,14 @@ def ask(
                 tool_choice={"type": "none"},
                 messages=retry_messages,
             )
-            retried_reply = "".join(block.text for block in retry_response.content if block.type == "text").strip()
-            if retried_reply:
-                reply = retried_reply
+            retried_continuation = "".join(block.text for block in retry_response.content if block.type == "text").strip()
+            if retried_continuation:
+                reply = (retry_prefill + retried_continuation).strip()
         except Exception:
             pass
+
+        if detect_language(reply) != language:
+            reply = _LANGUAGE_FALLBACK_REPLY[language]
 
     # Force silent replies for stop/cancel/play tools as requested by user ("you don't need to say עצרתי" or "בוצע")
     tool_stages = [stage for stage, _ in timeline if stage.startswith("tool:")]

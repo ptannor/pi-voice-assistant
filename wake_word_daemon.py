@@ -424,8 +424,11 @@ def _handle_conversation(
             elif said_stop and not cancel_timer_ran and not focus.alert_active():
                 focus.suppress_resume()
 
-            # Synthesize reply to WAV chunks
-            chunks, t_first_audio = speak_reply_chunks(reply)
+            # Synthesize reply to WAV chunks -- pass the conversation's
+            # actual language explicitly (ask() now guarantees the reply
+            # matches it) rather than letting speak_reply_chunks re-detect
+            # from the text, which can be fooled by a quoted phrase.
+            chunks, t_first_audio = speak_reply_chunks(reply, language=language)
 
             # Play each chunk with barge-in
             mic_leds.enter_speaking()

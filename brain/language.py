@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 
 HEBREW_RE = re.compile(r"[֐-׿]")
+LATIN_RE = re.compile(r"[A-Za-z]")
 LANGUAGE_NAMES = {"he": "Hebrew", "en": "English"}
 
 
@@ -28,7 +29,16 @@ def detect_language(text: str, acoustic_hint: str | None = None) -> str:
 
     `acoustic_hint` is Groq's transcription-response `language` field, when
     available -- takes priority over the text itself (see module docstring).
+
+    The text-only fallback counts Hebrew vs. Latin letters rather than just
+    checking whether *any* Hebrew character is present -- confirmed a reply
+    that's substantively English but quotes the user's original Hebrew
+    phrase back (e.g. "I'm not sure what you mean by 'X' -- could you
+    rephrase?") was misdetected as Hebrew by a bare presence check, which
+    defeated brain/llm.py's wrong-language retry (it compares this
+    function's output against the expected language) and could pick the
+    wrong TTS voice in brain/respond.py.
     """
     if acoustic_hint and acoustic_hint.strip().lower().startswith("he"):
         return "he"
-    return "he" if HEBREW_RE.search(text) else "en"
+    return "he" if len(HEBREW_RE.findall(text)) >= len(LATIN_RE.findall(text)) else "en"
