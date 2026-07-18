@@ -176,18 +176,15 @@ def _active_device_id(sp) -> str | None:
         for device in devices:
             name = device.get("name", "").lower()
             if name and (host_hint in name or name in host_hint):
-                print(f"Spotify device: '{device['name']}' (hostname match)", flush=True)
                 return device["id"]
 
     if SPOTIFY_DEVICE_NAME:
         for device in devices:
             if SPOTIFY_DEVICE_NAME.lower() in device.get("name", "").lower():
-                print(f"Spotify device: '{device['name']}' (SPOTIFY_DEVICE_NAME match)", flush=True)
                 return device["id"]
 
     for device in devices:
         if device.get("is_active"):
-            print(f"Spotify device: '{device['name']}' (is_active)", flush=True)
             return device["id"]
 
     # No SPOTIFY_DEVICE_NAME configured and nothing matched by hostname or
