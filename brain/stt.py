@@ -166,16 +166,30 @@ def transcribe(wav_path: Path, conversation_language: str | None = None) -> tupl
         text = "מה השעה"
         language = "he"
 
-    # Defensive phonetic correction: Whisper's well-documented tendency to
-    # substitute an unrelated (often crude) word for an unclear one -- base
-    # Whisper models are trained on huge amounts of noisy web/video captions
-    # and default to a handful of stock substitutions rather than admitting
-    # uncertainty. Confirmed live: "tell me a joke" came back with a
-    # profanity in place of "tell". Any single leading word followed by
-    # "me a joke" is overwhelmingly always this same request regardless of
-    # what Whisper actually heard there, so correct the whole phrase rather
-    # than trying to enumerate every possible substitution.
-    joke_request_match = re.match(r"^(\S+) me a joke$", clean_text)
+    # Defensive correction: Whisper's well-documented tendency to hallucinate
+    # a stock crude/profane word for a brief, unclear, or non-speech sound
+    # right at the very start of a clip (often the tail of the wake word, or
+    # the ack chime bleeding into the recording's lead-in) instead of just
+    # transcribing silence there -- the rest of the sentence usually comes
+    # through perfectly clearly. Confirmed live twice, with two different
+    # genuine requests behind it ("tell me a joke", "what's the weather...")
+    # and a different real leading word each time -- so unlike the עצור/Masha
+    # corrections above, there's no single word to correct *to* here. Just
+    # dropping the hallucinated leading word and letting Claude's own
+    # understanding handle the remaining (now clean) fragment is safer than
+    # guessing what was actually said.
+    leading_word_match = re.match(r"^(\S+)\s+(.+)$", text)
+    if leading_word_match:
+        first_word = leading_word_match.group(1).strip(".,!?").lower()
+        if re.fullmatch(r"fuck(ing|er)?|shit(ty)?|damn|goddamn|hell|bitch|ass(hole)?|crap|f\*+k?|s\*+t?", first_word):
+            text = leading_word_match.group(2)
+            clean_text = text.replace("!", "").replace(".", "").replace(",", "").strip().lower()
+
+    # Defensive phonetic correction: the specific case above of "tell me a
+    # joke" losing its leading word this way (or being misheard as some
+    # other unrelated word in its place) -- "me a joke" alone, or "<word> me
+    # a joke", is overwhelmingly always this same request.
+    joke_request_match = re.match(r"^(?:(\S+) )?me a joke$", clean_text)
     if joke_request_match and joke_request_match.group(1) not in ("tell", "give", "make", "say"):
         text = "tell me a joke"
 
