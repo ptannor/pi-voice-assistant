@@ -106,6 +106,15 @@ COOLDOWN_SECONDS = 2.0  # ignore re-triggers right as we resume listening
 INITIAL_QUERY_TIMEOUT = 4.0
 FOLLOW_UP_TIMEOUT = 3.5  # long enough for a real follow-up, short enough to limit exposure to ambient noise
 MAX_FOLLOW_UP_TURNS = 5  # safety cap -- require a fresh "Alexa" after a while regardless
+# Tool names (matched as substrings against ask_timeline's "tool:<name>"
+# stage labels) whose reply is silent on success (see brain/llm.py) but
+# where an immediate follow-up is likely enough that the conversation
+# should stay open anyway -- e.g. right after skipping a track, "no, a
+# different one" or "what's playing" is a far more likely next utterance
+# than a fresh wake word. Confirmed a real gap: skip_track's silent reply
+# doesn't end in "?", so the keep-listening check below used to close the
+# conversation immediately after every skip.
+MUSIC_FOLLOW_UP_TOOL_KEYWORDS = ("play_music", "search_music", "skip_track", "seek_music", "get_current_track")
 # How long after a conversation ends a fresh "Alexa" is still treated as a
 # continuation of it (same history) rather than starting blank. Confirmed
 # needed: a closed-answer reply (not ending in "?") ends the
@@ -385,25 +394,35 @@ def _handle_conversation(
             t3 = time.monotonic()
             print(f"Claude: {reply}", flush=True)
 
-            # Decide whether the music should stay stopped (no resume) after
-            # this conversation. Tell "stop the music" apart from "stop the
-            # alarm": the latter must NOT suppress the music resume.
+            # Decide whether to suppress the pre-conversation snapshot resume
+            # after this conversation. Tell "stop the music" apart from "stop
+            # the alarm": the latter must NOT suppress the music resume.
             #   * If we woke up on a ringing alarm, any "stop" targets the alarm
             #     -> leave the music to resume (dialog_opened_on_alert short-
             #     circuits everything else).
             #   * An explicit stop_music tool -> the user stopped the music.
             #   * A bare "stop" with no timer/alarm in play -> stop the music.
             #   * cancel_timer -> stops the timer only; music still resumes.
+            #   * play_music/skip_track/seek_music ran -> the user just
+            #     deliberately changed what's playing; resuming the snapshot
+            #     from *before* this conversation started would silently
+            #     revert that change. Confirmed live: "next song" moved to a
+            #     new track, then jumped back to the original song when the
+            #     conversation ended and the stale snapshot resumed over it.
             lower_text = (text or "").lower()
             said_stop = any(w in lower_text for w in STOP_WORDS)
             stop_music_ran = any("stop_music" in stage for stage, _ in ask_timeline)
             cancel_timer_ran = any("cancel_timer" in stage for stage, _ in ask_timeline)
+            content_changed_ran = any(
+                stage.startswith("tool:") and any(kw in stage for kw in ("play_music", "skip_track", "seek_music"))
+                for stage, _ in ask_timeline
+            )
             if focus.dialog_opened_on_alert():
                 pass
-            elif stop_music_ran:
-                focus.mark_content_stopped()
+            elif stop_music_ran or content_changed_ran:
+                focus.suppress_resume()
             elif said_stop and not cancel_timer_ran and not focus.alert_active():
-                focus.mark_content_stopped()
+                focus.suppress_resume()
 
             # Synthesize reply to WAV chunks
             chunks, t_first_audio = speak_reply_chunks(reply)
@@ -458,8 +477,17 @@ def _handle_conversation(
             if said_stop:
                 break  # "stop" means stop listening too, not just go quiet
 
-            # Keep listening only when Claude's own reply is a genuine question
-            if not reply.rstrip().endswith("?"):
+            # Keep listening when Claude's own reply is a genuine question, or
+            # when a music tool just ran (see MUSIC_FOLLOW_UP_TOOL_KEYWORDS) --
+            # those replies are deliberately silent on success, but a household
+            # member mid-conversation about music is very likely to immediately
+            # follow up (change the song again, stop it, ask what's playing)
+            # without saying the wake word again.
+            music_follow_up_likely = any(
+                stage.startswith("tool:") and any(kw in stage for kw in MUSIC_FOLLOW_UP_TOOL_KEYWORDS)
+                for stage, _ in ask_timeline
+            )
+            if not reply.rstrip().endswith("?") and not music_follow_up_likely:
                 break
         except (TranscriptionError, BrainError, RecordingFailed, PlaybackFailed) as exc:
             print(f"Conversation turn failed: {exc}", file=sys.stderr, flush=True)

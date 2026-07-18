@@ -100,6 +100,11 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "get_current_track_hebrew",
+        "description": "Get the name and artist of the song or podcast episode currently playing (or paused) on Spotify.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "play_music_english",
         "description": "Play a song, artist, or genre of music on Spotify. To resume or continue paused music, pass 'resume' as the query.",
         "input_schema": {
@@ -130,6 +135,11 @@ TOOLS = [
     {
         "name": "stop_music_english",
         "description": "Stop any currently playing music on Spotify.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_current_track_english",
+        "description": "Get the name and artist of the song or podcast episode currently playing (or paused) on Spotify.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -497,9 +507,11 @@ TOOL_LANGUAGES: dict[str, list[str]] = {
     "play_music_hebrew": ["he"],
     "search_music_hebrew": ["he"],
     "stop_music_hebrew": ["he"],
+    "get_current_track_hebrew": ["he"],
     "play_music_english": ["en"],
     "search_music_english": ["en"],
     "stop_music_english": ["en"],
+    "get_current_track_english": ["en"],
     # Timers are also split by language.
     "set_timer_hebrew": ["he"],
     "cancel_timer_hebrew": ["he"],
@@ -590,6 +602,9 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
             return spotify.stop()
         except spotify.SpotifyError as exc:
             return f"status: error_stop_failed, details: {exc}"
+
+    if name in ("get_current_track_hebrew", "get_current_track_english"):
+        return spotify.current_track_info()
 
     if name in ("set_timer_hebrew", "set_timer_english"):
         return timer.set_timer(tool_input["duration_seconds"], out_device)
