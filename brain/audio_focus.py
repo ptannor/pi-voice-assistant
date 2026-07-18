@@ -98,6 +98,14 @@ class AudioFocusManager:
                     self._dialog_opened_on_alert = True
                     self._active.add(Channel.DIALOG)
                     self._release_locked(Channel.ALERT, resume=False)
+                    # Actually stop the timer's looping alarm sound now, not
+                    # just the bookkeeping above -- the loop thread only
+                    # checks its own stop signal, and otherwise keeps calling
+                    # play_wav() obliviously, contending with (and once,
+                    # hanging against) the wake-word ack chime's own
+                    # play_wav() call on the same output device. See
+                    # brain/timer.py's dismiss_ringing_alarm().
+                    self._dismiss_ringing_alarm()
                 self._active.add(Channel.DIALOG)
                 self._pause_spotify()
             elif channel == Channel.ALERT:
@@ -169,6 +177,13 @@ class AudioFocusManager:
         from . import spotify
         try:
             spotify.stop()
+        except Exception:
+            pass
+
+    def _dismiss_ringing_alarm(self) -> None:
+        from . import timer
+        try:
+            timer.dismiss_ringing_alarm()
         except Exception:
             pass
 
