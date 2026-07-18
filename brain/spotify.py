@@ -300,6 +300,39 @@ def _get_recommendations(sp, track) -> list[str]:
     return uris[:15]
 
 
+def _get_episode_recommendations(sp, episode) -> list[str]:
+    """Other episode URIs from the same show, queued after the target
+    episode -- mirrors _get_recommendations' same-artist continuation for
+    regular tracks. Without this, a single episode started by direct URI
+    has no next-episode context at all (unlike a full show/playlist/album
+    context_uri, which Spotify already knows how to advance through
+    itself), so skip_track's next_track() has nowhere to go: confirmed live
+    that Spotify's queue just repeats the same lone episode, and next_track
+    silently no-ops -- it returns success with the track unchanged, not an
+    error, so the household hears nothing happen with no indication why.
+    """
+    uris = []
+    try:
+        show = episode.get("show")
+        if not show:
+            # An episode from sp.search(type="episode") has no embedded show
+            # object at all (only sp.episode() by id includes it) -- fetch
+            # the full episode once to get it.
+            episode = sp.episode(episode["id"])
+            show = episode.get("show") or {}
+        show_id = show.get("id")
+        if not show_id:
+            return uris
+        results = sp.show_episodes(show_id, limit=10)
+        for item in results.get("items", []):
+            uri = item.get("uri")
+            if uri and uri != episode["uri"] and uri not in uris:
+                uris.append(uri)
+    except Exception as exc:
+        print(f"Failed to generate episode recommendations: {exc}", file=sys.stderr)
+    return uris[:10]
+
+
 def play(query: str) -> str:
     """Search for `query` and start playing the top matching track (or play a URI directly).
     Returns a short status string for Claude to relay; raises SpotifyError on failure."""
@@ -358,10 +391,10 @@ def play(query: str) -> str:
                 episodes = results.get("episodes", {}).get("items", [])
                 shows = results.get("shows", {}).get("items", [])
                 if episodes:
-                    item = episodes[0]
-                    uri = item["uri"]
-                    name = item["name"]
-                    artists = item.get("show", {}).get("name", "Podcast")
+                    episode = episodes[0]
+                    uri = episode["uri"]
+                    name = episode["name"]
+                    artists = episode.get("show", {}).get("name", "Podcast")
                 elif shows:
                     item = shows[0]
                     uri = item["uri"]
@@ -393,7 +426,8 @@ def play(query: str) -> str:
             rec_uris = _get_recommendations(sp, track)
             sp.start_playback(device_id=device_id, uris=[uri] + rec_uris)
         elif uri.startswith("spotify:episode:"):
-            sp.start_playback(device_id=device_id, uris=[uri])
+            rec_uris = _get_episode_recommendations(sp, episode)
+            sp.start_playback(device_id=device_id, uris=[uri] + rec_uris)
         elif uri.startswith("spotify:show:") or uri.startswith("spotify:playlist:") or uri.startswith("spotify:album:"):
             sp.start_playback(device_id=device_id, context_uri=uri)
         else:
