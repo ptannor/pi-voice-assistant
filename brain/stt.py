@@ -166,6 +166,19 @@ def transcribe(wav_path: Path, conversation_language: str | None = None) -> tupl
         text = "מה השעה"
         language = "he"
 
+    # Defensive phonetic correction: Whisper's well-documented tendency to
+    # substitute an unrelated (often crude) word for an unclear one -- base
+    # Whisper models are trained on huge amounts of noisy web/video captions
+    # and default to a handful of stock substitutions rather than admitting
+    # uncertainty. Confirmed live: "tell me a joke" came back with a
+    # profanity in place of "tell". Any single leading word followed by
+    # "me a joke" is overwhelmingly always this same request regardless of
+    # what Whisper actually heard there, so correct the whole phrase rather
+    # than trying to enumerate every possible substitution.
+    joke_request_match = re.match(r"^(\S+) me a joke$", clean_text)
+    if joke_request_match and joke_request_match.group(1) not in ("tell", "give", "make", "say"):
+        text = "tell me a joke"
+
     # Defensive final check: trust an unambiguous Hebrew script even if the
     # English-forced attempt somehow scored higher confidence (or was forced).
     if language == "en" and HEBREW_RE.search(text):
