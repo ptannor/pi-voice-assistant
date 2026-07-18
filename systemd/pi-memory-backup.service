@@ -1,0 +1,10 @@
+[Unit]
+Description=Push an encrypted copy of household_memory/ to the off-Pi backup remote (one-shot, run by the .timer, and started directly after any memory/vault write)
+
+[Service]
+Type=oneshot
+# User-level unit (not root/system), matching pi-voice-assistant-gate.service
+# -- brain/backup_trigger.py starts this via `systemctl --user`, so it must
+# run as the same user for that to work without elevated privileges.
+WorkingDirectory=/home/<PI_USER>/<PI_DIR>
+ExecStart=/home/<PI_USER>/<PI_DIR>/scripts/backup_memory.sh

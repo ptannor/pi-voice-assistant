@@ -21,6 +21,7 @@ from .config import (
     HOUSEHOLD_TIMEZONE,
 )
 from .language import LANGUAGE_NAMES, detect_language
+from . import vault
 from .memory import memory_prompt_block
 from .mode import is_funny_voice_enabled
 from .tools import execute_tool, get_tools_for_language
@@ -190,6 +191,14 @@ confirm. If the user explicitly asks up front to remember something securely,
 safely, or privately, call store_in_vault directly without asking first. Use
 retrieve_from_vault to look up a stored secret and forget_from_vault to
 remove one.
+
+The vault is also password-protected, once per conversation: any of
+store_in_vault, retrieve_from_vault, or forget_from_vault will tell you it's
+locked the first time one is used this conversation. When that happens, ask
+the user for the vault password, then call unlock_vault with whatever they
+say -- if it's wrong, tell them plainly and let them try again, don't guess
+or reveal what the real password is. Once unlocked, don't ask again for the
+rest of this conversation; it will lock again next time.
 
 There's also a household reference library (recipes, family member details,
 birthdays, school/activity schedules, and more) too big to keep in context by
@@ -562,6 +571,12 @@ def ask(
     tools degrade to a silent no-op sound in that case, same as any other
     best-effort audio cue in this codebase.
     """
+    if not history:
+        # A fresh conversation -- re-lock the vault so its password is
+        # required again this session, not just the first time ever (see
+        # brain/vault.py's lock()/unlock()).
+        vault.lock()
+
     client = _get_client()
     timeline: list[tuple[str, float]] = []
     pending_prefill = ""  # set below only when the forced-final call prefills its reply

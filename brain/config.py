@@ -101,6 +101,27 @@ HOUSEHOLD_FAMILY_NAMES_HE = _read_pi_config_value("HOUSEHOLD_FAMILY_NAMES_HE")
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+# Base64-encoded 32-byte AES-256-GCM key for the encrypted memory vault (see
+# brain/vault.py) -- a genuine secret, not personal config, so it lives here
+# in .env rather than .pi-config (matching every other API key in this file).
+# Generate one with `python -m brain.vault --init`. Protects the vault against
+# loss/leakage of the Pi/SD-card (theft, backup exposure), not a live-
+# compromised running Pi -- the daemon decrypts unattended at boot with no
+# passphrase prompt. Store a copy off-Pi (password manager, etc.): it's not
+# inside household_memory/, so it is NOT included in the encrypted off-Pi
+# backup (see scripts/backup_memory.sh) -- lose it and vault.enc is
+# unrecoverable.
+MEMORY_VAULT_KEY = os.environ.get("MEMORY_VAULT_KEY")
+
+# Spoken passphrase Claude asks for before it will store/retrieve/forget
+# anything in the vault (see brain/vault.py's unlock()) -- a lightweight
+# household gate on top of the encryption above, not a replacement for it.
+# Also a genuine secret (it gates access to the vault), hence .env not
+# .pi-config. Given once per conversation, not once ever -- brain/llm.py
+# re-locks the vault at the start of every new conversation.
+VAULT_ACCESS_PASSWORD = os.environ.get("VAULT_ACCESS_PASSWORD")
+
 # Serper.dev web search -- 2,500 free queries, no card required, then
 # pay-as-you-go from $0.001/query. Chosen over Anthropic's native web search
 # tool ($0.01/search, but can't intercept the query to cache it -- it runs

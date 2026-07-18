@@ -19,7 +19,7 @@ for it and TOOLS is sent to the API as-is.
 """
 from __future__ import annotations
 
-from . import classify, gcal, halacha, memory, reminders, spotify, telegram_push, timer
+from . import classify, gcal, halacha, memory, reminders, spotify, telegram_push, timer, vault
 from .calculator import calculate
 from .language import LANGUAGE_NAMES
 from .mode import set_funny_voice
@@ -320,6 +320,74 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    # Real (not a stub) -- see vault.py. Separate from remember/forget: this
+    # tier is encrypted and reserved for genuinely sensitive facts (account
+    # numbers, PINs, passwords). remember() refuses anything that looks
+    # sensitive and tells Claude to offer this instead (see the system
+    # prompt's vault paragraph) -- store_in_vault is also the direct path
+    # when the user explicitly asks to remember something securely up front.
+    {
+        "name": "unlock_vault",
+        "description": (
+            "Unlock the encrypted vault for the rest of this conversation by giving the "
+            "household's vault password. Call this when the user offers the password, or "
+            "in response to being asked for it after a vault action reported it's locked."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"password": {"type": "string", "description": "The password the user gave."}},
+            "required": ["password"],
+        },
+    },
+    {
+        "name": "store_in_vault",
+        "description": (
+            "Store a sensitive secret (e.g. a bank account number, PIN, password, or "
+            "safe code) in the encrypted vault, separate from regular memory. Use this "
+            "directly when the user explicitly asks you to remember something securely, "
+            "safely, or privately, or after they've confirmed they want something "
+            "flagged as sensitive stored this way."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "A short label for the secret, e.g. 'bank account' or 'safe code'.",
+                },
+                "value": {"type": "string", "description": "The secret value itself."},
+            },
+            "required": ["label", "value"],
+        },
+    },
+    {
+        "name": "retrieve_from_vault",
+        "description": (
+            "Look up a previously stored secret from the encrypted vault, e.g. when "
+            "asked for a bank account number or a safe code."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text identifying which stored secret to retrieve, e.g. 'bank account'.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "forget_from_vault",
+        "description": "Remove a previously stored secret from the encrypted vault, when the user asks you to forget it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Text identifying which stored secret to remove."}
+            },
+            "required": ["query"],
+        },
+    },
     {
         "name": "seek_music_hebrew",
         "description": "Seek forward or backward in the currently playing song on Spotify by a number of seconds. Positive values skip forward, negative values skip backward.",
@@ -572,6 +640,18 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
 
     if name == "search_household_info":
         return memory.search_household_info(tool_input["query"])
+
+    if name == "unlock_vault":
+        return vault.unlock(tool_input["password"])
+
+    if name == "store_in_vault":
+        return vault.store_secret(tool_input["label"], tool_input["value"])
+
+    if name == "retrieve_from_vault":
+        return vault.retrieve_secret(tool_input["query"])
+
+    if name == "forget_from_vault":
+        return vault.forget_secret(tool_input["query"])
 
     if name in ("play_music_hebrew", "play_music_english"):
         try:

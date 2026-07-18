@@ -1198,6 +1198,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "cryptography" },
     { name = "edge-tts" },
     { name = "google-api-python-client" },
     { name = "google-auth" },
@@ -1217,6 +1218,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic" },
+    { name = "cryptography" },
     { name = "edge-tts" },
     { name = "google-api-python-client" },
     { name = "google-auth" },

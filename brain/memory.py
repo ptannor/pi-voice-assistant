@@ -4,7 +4,10 @@ every time the wake word starts a new conversation).
 
 Two tiers, both under the gitignored `household_memory/` directory at the
 repo root (real household data, not something that belongs in a public
-repo):
+repo). A third tier, brain/vault.py, holds genuinely sensitive facts (bank
+details, PINs) encrypted -- remember() below refuses anything that looks
+sensitive (see vault.looks_sensitive) rather than writing it here in plain
+text.
 
 - `core.txt`: small facts/preferences (names, allergies, house rules).
   Plain text, one per line, injected into *every* system prompt (see
@@ -31,6 +34,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from . import backup_trigger, vault
+
 MEMORY_DIR = Path(__file__).parent.parent / "household_memory"
 CORE_PATH = MEMORY_DIR / "core.txt"
 REFERENCE_DIR = MEMORY_DIR / "reference"
@@ -46,12 +51,25 @@ def load_memories() -> list[str]:
 def _save_memories(memories: list[str]) -> None:
     CORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     CORE_PATH.write_text("\n".join(memories) + ("\n" if memories else ""))
+    backup_trigger.trigger()
 
 
 def remember(fact: str) -> str:
     fact = fact.strip()
     if not fact:
         return "Nothing to remember -- the fact was empty."
+    if vault.looks_sensitive(fact):
+        # Don't silently write something account/PIN/password-shaped into
+        # plaintext core.txt. Returned as a tool result (not raised) so
+        # Claude sees it and can ask the user in the same conversation --
+        # see brain/vault.py's looks_sensitive() and the system prompt
+        # paragraph on store_in_vault.
+        return (
+            "That looks like sensitive information (e.g. an account number, PIN, or "
+            "password) -- it was NOT saved to plain memory. Ask the user whether to "
+            "store it in the encrypted vault instead; if they confirm, call "
+            "store_in_vault with a short label and the value."
+        )
     memories = load_memories()
     if any(existing.lower() == fact.lower() for existing in memories):
         return "Already remembered -- no change."

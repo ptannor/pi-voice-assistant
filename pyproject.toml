@@ -31,6 +31,10 @@ dependencies = [
     # wake_word_daemon.py process directly on platforms without systemd.
     "ntplib>=0.4.0",
     "psutil>=7.2.2",
+    # Encrypted memory vault (brain/vault.py) -- Apache-2.0/BSD, license-
+    # compatible. Was previously only a transitive dep of google-auth; made
+    # direct since the vault relies on it explicitly (AESGCM).
+    "cryptography",
 ]
 
 # This is a personal project deployed to a home Raspberry Pi with no access to

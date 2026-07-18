@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the household memory backup daily
+
+[Timer]
+OnCalendar=daily
+# Catches up on a missed run if the Pi was off at the scheduled time --
+# unlike the gate timer, a backup that's a few hours late is harmless, so
+# this matters more here than it would there.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
