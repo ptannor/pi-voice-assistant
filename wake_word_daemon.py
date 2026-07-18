@@ -360,11 +360,12 @@ def _handle_conversation(
             if recorded is None:
                 break  # nothing said -- end the conversation, back to wake-word listening
 
-            # Fire immediately, not just on tool-use turns -- the median
-            # transcribe+ask+first_audio gap is ~3.4s (p90 ~6.5s, see
-            # logs/latency.jsonl) even with no tool call, which otherwise
-            # feels like dead air. If a tool call *does* happen, on_tool_call
-            # below plays a second one partway through the longer wait.
+            # One short, gentle beep marking "finished listening" -- not
+            # repeated on tool calls (see ask() below) since the white
+            # breathing "thinking" LED now covers the whole transcribe/
+            # Claude/TTS gap on its own; two inconsistent beeps was the
+            # actual complaint, not too few.
+            mic_leds.enter_thinking()
             play_wav_async(THINKING_WAV, out_device)
 
             # Every turn (not just the first) uses the deterministic language
@@ -379,7 +380,6 @@ def _handle_conversation(
 
             reply, history, ask_timeline = ask(
                 text, language, history,
-                on_tool_call=lambda: play_wav_async(THINKING_WAV, out_device),
                 out_device=out_device,
             )
             t3 = time.monotonic()

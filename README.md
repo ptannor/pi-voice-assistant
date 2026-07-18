@@ -511,6 +511,12 @@ are the closest fit within what the firmware actually supports:
   custom colors instead of the device's own default blue/green. This is the
   most important one: it's your only signal that it actually heard "Alexa"
   and is waiting on you.
+- **Thinking** (white breathing pulse) — recording just finished; covers the
+  transcribe/Claude/TTS gap until the reply starts playing. Speed tuned live
+  against the real hardware (1 too slow, 4 too fast, 2 confirmed good).
+  Paired with a single short chime right when this state starts (not
+  repeated on tool calls anymore — two inconsistent beeps was the actual
+  complaint that led to adding this state).
 - **Speaking** (solid magenta) — the assistant's reply is playing.
 - **Idle transition** (a brief solid white flash) — plays once when a
   conversation ends, then settles back into the idle rainbow.

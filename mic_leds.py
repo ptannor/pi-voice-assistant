@@ -11,6 +11,9 @@ the closest fit confirmed live against the real hardware:
 - listening: wake word just fired, actively recording the question -- blue
   base with a green highlight in the direction the sound is coming from
   (LED_DOA_COLOR reused with custom colors instead of the device default)
+- thinking: recording just finished, waiting on transcription/Claude/TTS --
+  white breathing pulse (speed tuned live against the real hardware: 1 was
+  too slow, 4 too fast, 2 confirmed good)
 - speaking: the assistant's reply is playing (solid magenta)
 - idle transition: a brief white flash when a conversation ends, then back
   to the idle rainbow
@@ -42,6 +45,8 @@ IDLE_EFFECT = EFFECT_RAINBOW  # resting look
 
 LISTENING_BASE_COLOR = 0x0033FF  # blue -- ring base while recording the question
 LISTENING_DOA_COLOR = 0x00FF00  # green -- highlight in the direction of the sound
+THINKING_COLOR = 0xFFFFFF  # white breathing pulse -- waiting on transcribe/Claude/TTS
+THINKING_SPEED = 2  # confirmed live: 1 too slow, 4 too fast, 2 just right
 SPEAKING_COLOR = 0xFF00FF  # magenta -- assistant is talking
 TRANSITION_COLOR = 0xFFFFFF  # white flash -- wrapping up, heading back to idle
 TRANSITION_SECONDS = 0.5  # how long the flash holds before settling back to idle
@@ -118,6 +123,14 @@ def _apply_doa(base_color: int, doa_color: int) -> None:
     _run("led_gammify", "1")
 
 
+def _apply_breath(color: int, speed: int) -> None:
+    _run("led_effect", str(EFFECT_BREATH))
+    _run("led_color", f"0x{color:06x}")
+    _run("led_speed", str(speed))
+    _run("led_brightness", str(BRIGHTNESS))
+    _run("led_gammify", "1")
+
+
 def enter_idle() -> None:
     """Resting state: static rainbow."""
     _bump_generation()
@@ -129,6 +142,14 @@ def enter_listening() -> None:
     _bump_generation()
     threading.Thread(
         target=lambda: _apply_doa(LISTENING_BASE_COLOR, LISTENING_DOA_COLOR), daemon=True
+    ).start()
+
+
+def enter_thinking() -> None:
+    """Recording just finished -- waiting on transcription/Claude/TTS."""
+    _bump_generation()
+    threading.Thread(
+        target=lambda: _apply_breath(THINKING_COLOR, THINKING_SPEED), daemon=True
     ).start()
 
 
