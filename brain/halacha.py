@@ -168,8 +168,18 @@ def pick_short_halacha_episode() -> dict | None:
 
         for item in page.get("items", []):
             duration_ms = item.get("duration_ms")
-            if duration_ms and duration_ms / 1000 <= _MAX_AUDIO_SECONDS:
-                candidates[item["id"]] = item
+            if not (duration_ms and duration_ms / 1000 <= _MAX_AUDIO_SECONDS):
+                continue
+            # Defense in depth: these shows are Hebrew-only in practice
+            # (confirmed live, both at show- and episode-level metadata),
+            # but Torah content must always be Hebrew per policy (see
+            # brain/llm.py) -- don't rely on that holding by chance forever.
+            # Missing metadata (empty/absent "languages") doesn't reject,
+            # since not everything Spotify serves populates it.
+            languages = item.get("languages") or []
+            if languages and "he" not in languages:
+                continue
+            candidates[item["id"]] = item
 
         if any(k not in played for k in candidates):
             break  # this page already has something fresh -- no need to sample another show
