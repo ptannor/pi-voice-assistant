@@ -15,6 +15,7 @@ openWakeWord's pretrained "hey_jarvis" model as a placeholder Hebrew trigger
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import queue
@@ -25,6 +26,8 @@ import wave
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import numpy as np
 
 # Global state for Spotify playback status to adjust wake word threshold dynamically
 spotify_is_playing = False
@@ -52,7 +55,7 @@ from audio_check.config import DEFAULT_CONFIG
 from audio_check.devices import Device, find_input_device, find_output_device
 from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed
 from audio_check.player import play_wav, play_wav_async
-from audio_check.recorder import record_until_silence
+from audio_check.recorder import SILENCE_RMS_THRESHOLD, record_until_silence
 from brain.config import WAKE_WORD_MODEL_PATH
 from brain.llm import STOP_WORDS, BrainError, ask
 from brain.respond import speak_reply, speak_reply_chunks
@@ -101,6 +104,17 @@ HEBREW_WAKE_WORD = "hey_jarvis"  # fallback if models/mendy.onnx is ever missing
 SAMPLE_RATE = 16000
 CHUNK_SAMPLES = 1280  # 80ms at 16kHz -- openWakeWord's recommended chunk size
 DETECTION_THRESHOLD = 0.6  # Default threshold when music is not playing, to prevent false triggers
+# Wake words that fire against near-silent ambient audio -- confirmed live
+# ("Wake word detected: alexa (score=0.60)" with nobody actually speaking) --
+# are the model matching quiet background noise, not real speech. Reuses
+# audio_check/recorder.py's own empirically-tuned speech-vs-noise threshold
+# (background noise ~90-160, speech spikes 700-4000+) as a sanity gate: a
+# detection only counts if *some* chunk in the last second or so actually
+# reached that level, i.e. someone was plausibly talking nearby. Checked over
+# a short rolling window, not just the exact triggering chunk, since a wake
+# word's own quieter syllables (a trailing consonant, etc.) can dip below
+# this on their own mid-utterance.
+WAKE_WORD_RMS_HISTORY_CHUNKS = 12  # ~1s of CHUNK_SAMPLES (80ms) chunks
 COOLDOWN_SECONDS = 2.0  # ignore re-triggers right as we resume listening
 # How long to wait for the user to start talking before giving up.
 INITIAL_QUERY_TIMEOUT = 4.0
@@ -203,6 +217,7 @@ def _listen_for_wake_word(
 
     # Reset model states before listening for a fresh wake word trigger
     model.reset()
+    recent_rms: collections.deque = collections.deque(maxlen=WAKE_WORD_RMS_HISTORY_CHUNKS)
 
     with sd.InputStream(
         device=in_device.index,
@@ -215,12 +230,23 @@ def _listen_for_wake_word(
     ):
         while True:
             pcm = audio_queue.get()
+            # Always fed to the model (keeps its internal streaming state
+            # correct) regardless of the RMS gate below -- only the decision
+            # to *act* on a firing score is gated, not the model's own input.
+            recent_rms.append(float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2))))
             prediction = model.predict(pcm)
             now = time.monotonic()
             current_threshold = 0.35 if spotify_is_playing else DETECTION_THRESHOLD
             for key in wake_word_language:
                 score = prediction.get(key, 0.0)
                 if score > current_threshold and (now - last_trigger) > COOLDOWN_SECONDS:
+                    if max(recent_rms) < SILENCE_RMS_THRESHOLD:
+                        print(
+                            f"Ignoring '{key}' (score={score:.2f}) -- no speech-level "
+                            f"audio nearby (max RMS {max(recent_rms):.0f})",
+                            flush=True,
+                        )
+                        continue
                     print(f"Wake word detected: {key} (score={score:.2f})", flush=True)
                     return now, key
 
@@ -235,7 +261,7 @@ def _play_wav_with_barge_in(
     """Plays a WAV file on out_device while listening to in_device for the wake word.
     Returns True if a barge-in wake word was detected, False otherwise.
     """
-    from audio_check.player import _load_wav
+    from audio_check.player import _load_wav, _playback_lock
     try:
         target_sr = int(out_device.default_samplerate)
         audio, sample_rate = _load_wav(filepath, target_sr=target_sr)
@@ -246,55 +272,69 @@ def _play_wav_with_barge_in(
     # Reset the stateful wake word model's hidden states so it forgets the previous trigger
     model.reset()
 
-    # Start playback asynchronously with higher latency to prevent CPU/GIL starvation static noise
-    sd.play(audio, samplerate=sample_rate, device=out_device.index, latency='high')
-    duration = len(audio) / sample_rate
-    start_time = time.monotonic()
-
     audio_queue: queue.Queue = queue.Queue()
     def callback(indata, frames, time_info, status):
         audio_queue.put(indata[:, 0].copy())
 
+    # _playback_lock (see audio_check/player.py) serializes every sd.play()/
+    # sd.wait() call across threads -- sounddevice manages a single *global*
+    # default output stream, so two threads calling it concurrently race on
+    # shared state instead of queueing cleanly. This function used to call
+    # sd.play()/sd.stop()/sd.wait() directly, unlocked -- the one caller not
+    # covered by that fix, and confirmed able to reproduce the exact hang
+    # (stuck in native PortAudio, not even Ctrl-C-interruptible) the lock was
+    # built to prevent: a timer/reminder alarm's play_wav() landing mid-reply
+    # here. Holding the lock for this function's whole body (not just the
+    # sd.play() call) is safe for the alarm-preemption path below -- sd.stop()
+    # halts this function's own playback almost immediately, so a blocked
+    # alarm thread only waits that briefly, not for the lock to free up on
+    # its own schedule.
     barge_in = False
-    with sd.InputStream(
-        device=in_device.index,
-        channels=1,
-        samplerate=SAMPLE_RATE,
-        dtype="int16",
-        blocksize=CHUNK_SAMPLES,
-        latency='high',
-        callback=callback,
-    ):
-        while time.monotonic() - start_time < duration:
-            # A higher-priority channel (a timer alarm) firing mid-reply must
-            # preempt this spoken reply immediately -- the reply is abandoned,
-            # not queued behind the alarm. See brain/audio_focus.py.
-            if focus.is_preempted(Channel.DIALOG):
-                print("Reply preempted by a higher-priority alarm; stopping playback.", flush=True)
-                sd.stop()
-                break
-            try:
-                pcm = audio_queue.get(timeout=0.1)
-                prediction = model.predict(pcm)
-                # Any wake word interrupts -- not just whichever one started
-                # this conversation, since the user may address the assistant
-                # in either language mid-reply.
-                key, score = max(
-                    ((k, prediction.get(k, 0.0)) for k in wake_word_keys),
-                    key=lambda pair: pair[1],
-                )
-                # Lower threshold (0.35) during active playback to make it easier to
-                # interrupt the assistant's own voice feedback from the speakers.
-                if score > 0.35:
-                    print(f"Barge-in detected: {key} (score={score:.2f})! Interrupting playback.", flush=True)
-                    sd.stop()
-                    barge_in = True
-                    break
-            except queue.Empty:
-                continue
+    with _playback_lock:
+        # Start playback asynchronously with higher latency to prevent CPU/GIL starvation static noise
+        sd.play(audio, samplerate=sample_rate, device=out_device.index, latency='high')
+        duration = len(audio) / sample_rate
+        start_time = time.monotonic()
 
-    if not barge_in:
-        sd.wait()
+        with sd.InputStream(
+            device=in_device.index,
+            channels=1,
+            samplerate=SAMPLE_RATE,
+            dtype="int16",
+            blocksize=CHUNK_SAMPLES,
+            latency='high',
+            callback=callback,
+        ):
+            while time.monotonic() - start_time < duration:
+                # A higher-priority channel (a timer alarm) firing mid-reply must
+                # preempt this spoken reply immediately -- the reply is abandoned,
+                # not queued behind the alarm. See brain/audio_focus.py.
+                if focus.is_preempted(Channel.DIALOG):
+                    print("Reply preempted by a higher-priority alarm; stopping playback.", flush=True)
+                    sd.stop()
+                    break
+                try:
+                    pcm = audio_queue.get(timeout=0.1)
+                    prediction = model.predict(pcm)
+                    # Any wake word interrupts -- not just whichever one started
+                    # this conversation, since the user may address the assistant
+                    # in either language mid-reply.
+                    key, score = max(
+                        ((k, prediction.get(k, 0.0)) for k in wake_word_keys),
+                        key=lambda pair: pair[1],
+                    )
+                    # Lower threshold (0.35) during active playback to make it easier to
+                    # interrupt the assistant's own voice feedback from the speakers.
+                    if score > 0.35:
+                        print(f"Barge-in detected: {key} (score={score:.2f})! Interrupting playback.", flush=True)
+                        sd.stop()
+                        barge_in = True
+                        break
+                except queue.Empty:
+                    continue
+
+        if not barge_in:
+            sd.wait()
     return barge_in
 
 
@@ -573,7 +613,20 @@ def _main() -> None:
     start_reminders(out_device)
 
     while True:
-        last_trigger, triggered_key = _listen_for_wake_word(model, wake_word_language, in_device, last_trigger)
+        try:
+            last_trigger, triggered_key = _listen_for_wake_word(model, wake_word_language, in_device, last_trigger)
+        except Exception as exc:
+            # Unlike _handle_conversation (which already has its own broad
+            # except below), this call had no error recovery at all -- any
+            # transient audio error (e.g. a USB mic dropping/re-enumerating)
+            # took the whole daemon down with it. systemd's Restart=on-failure
+            # masks that on the Pi, but running directly (dev, or if that unit
+            # setting ever changes) it doesn't. Log and retry instead of
+            # crashing; the short sleep avoids a tight loop if the device is
+            # genuinely gone rather than just transiently busy.
+            print(f"Wake-word listening failed ({exc!r}); retrying in 2s.", file=sys.stderr, flush=True)
+            time.sleep(2)
+            continue
 
         if time.monotonic() - last_conversation_end < CONTINUATION_WINDOW_SECONDS:
             print("Continuing previous conversation's context", flush=True)
