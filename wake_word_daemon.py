@@ -257,9 +257,13 @@ def _play_wav_with_barge_in(
     out_device: Device,
     model,
     wake_word_keys,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Plays a WAV file on out_device while listening to in_device for the wake word.
-    Returns True if a barge-in wake word was detected, False otherwise.
+    Returns (barge_in, triggered_key) -- triggered_key is which wake word
+    interrupted (so the caller can switch the conversation's language if it
+    differs from the one that started it -- barging in with the other
+    language's wake word is exactly as clear a language signal as the
+    original wake word was), or None if there was no barge-in.
     """
     from audio_check.player import _load_wav, _playback_lock
     try:
@@ -290,6 +294,7 @@ def _play_wav_with_barge_in(
     # alarm thread only waits that briefly, not for the lock to free up on
     # its own schedule.
     barge_in = False
+    triggered_key = None
     with _playback_lock:
         # Start playback asynchronously with higher latency to prevent CPU/GIL starvation static noise
         sd.play(audio, samplerate=sample_rate, device=out_device.index, latency='high')
@@ -329,13 +334,14 @@ def _play_wav_with_barge_in(
                         print(f"Barge-in detected: {key} (score={score:.2f})! Interrupting playback.", flush=True)
                         sd.stop()
                         barge_in = True
+                        triggered_key = key
                         break
                 except queue.Empty:
                     continue
 
         if not barge_in:
             sd.wait()
-    return barge_in
+    return barge_in, triggered_key
 
 
 def _handle_conversation(
@@ -352,11 +358,12 @@ def _handle_conversation(
     always starts blank.
 
     `conversation_language` (from which wake word triggered this call -- see
-    _load_wake_word_model) is applied to EVERY turn below, not just the
-    first -- by product decision, a conversation's language never changes
-    mid-stream; switching languages requires a fresh wake word (which starts
-    a new call to this function). This also means every turn only needs one
-    Groq transcription call instead of two (see brain/stt.py's transcribe()
+    _load_wake_word_model) is applied to every turn below -- except that a
+    barge-in with the *other* language's wake word switches it for the rest
+    of this same call, exactly as if a fresh wake word had started a new
+    conversation (see the barge_in_key handling below); it never drifts any
+    other way mid-stream. This also means every turn only needs one Groq
+    transcription call instead of two (see brain/stt.py's transcribe()
     docstring for the dual-detect fallback this skips).
     """
     # Acquire the DIALOG audio-focus channel for the duration of this
@@ -474,8 +481,18 @@ def _handle_conversation(
             mic_leds.enter_speaking()
             barge_in = False
             for wav in chunks:
-                barge_in = _play_wav_with_barge_in(wav, in_device, out_device, model, wake_word_keys)
+                barge_in, barge_in_key = _play_wav_with_barge_in(wav, in_device, out_device, model, wake_word_keys)
                 wav.unlink(missing_ok=True)
+                if barge_in and wake_word_keys[barge_in_key] != conversation_language:
+                    # Barging in with the *other* language's wake word is
+                    # exactly as clear a language signal as the wake word
+                    # that started this conversation -- switch for the rest
+                    # of it, same as a fresh wake word would from main().
+                    print(
+                        f"Barge-in switched conversation language to {wake_word_keys[barge_in_key]!r} (via {barge_in_key!r})",
+                        flush=True,
+                    )
+                    conversation_language = wake_word_keys[barge_in_key]
                 if focus.is_preempted(Channel.DIALOG):
                     preempted = True
                     break
