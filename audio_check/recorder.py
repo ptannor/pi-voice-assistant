@@ -93,6 +93,19 @@ CHUNK_SAMPLES = 1600  # 100ms at 16kHz
 # recorded well past it. 0.3s is well under a real spoken syllable/word but
 # comfortably longer than an isolated one-chunk noise spike.
 MIN_SPEECH_RUN_SECONDS = 0.3
+# Separate, shorter threshold for confirming the *onset* of speech (the very
+# first sustained loud run of the recording) rather than renewed speech
+# after a pause -- a curt, one-syllable command like "stop" can have a total
+# loud duration close to or under MIN_SPEECH_RUN_SECONDS, especially with a
+# quiet trailing consonant, so confirmed live: using the same 0.3s threshold
+# for onset sometimes never confirmed "stop" as speech at all, producing a
+# short garbled fragment instead ("Tap."). Kept lower than
+# MIN_SPEECH_RUN_SECONDS specifically because the onset case doesn't carry
+# the same false-positive risk the mid-conversation case does: background
+# noise ahead of the wake-word response is far less likely at the exact
+# moment someone just finished talking to the device than mid-pause during
+# an ongoing turn, so it can afford to be more sensitive.
+MIN_SPEECH_ONSET_SECONDS = 0.2
 
 # macOS CoreAudio's AUHAL backend occasionally fails to start a stream with
 # "Internal PortAudio error" (-9986) -- confirmed live, right after a dense
@@ -191,6 +204,7 @@ def record_until_silence(
     chunk_duration = CHUNK_SAMPLES / sample_rate
     consecutive_loud_chunks = 0
     min_speech_run_chunks = max(1, round(MIN_SPEECH_RUN_SECONDS / chunk_duration))
+    min_onset_chunks = max(1, round(MIN_SPEECH_ONSET_SECONDS / chunk_duration))
 
     stream = _open_input_stream(device, channels, sample_rate, callback)
     try:
@@ -231,7 +245,7 @@ def record_until_silence(
                 else:
                     pending_speech_buffer = []
 
-                if consecutive_loud_chunks >= min_speech_run_chunks:
+                if consecutive_loud_chunks >= min_onset_chunks:
                     if lead_in_buffer:
                         chunks.extend(lead_in_buffer)
                         lead_in_buffer = []
