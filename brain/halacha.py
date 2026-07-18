@@ -12,10 +12,14 @@ Two ways to deliver it, tried in this order:
    Tracks which episode ids have already been played (logs/ file, mirrors
    shabbat/gate.py's fired-id state pattern) so the same clip doesn't repeat
    while there's still a fresh one available -- once the visible pool is
-   exhausted, repeats are allowed rather than failing.
+   exhausted, repeats are allowed rather than failing (real recordings are
+   worth more than a repeat, and worth much more than a TTS-read one -- see
+   _MAX_AUDIO_SECONDS below for why the pool is sized to make repeats rare
+   in the first place rather than leaning on this fallback).
 2. **TTS-composed fallback** (get_daily_halacha_text) -- only reached if no
-   suitable recording turns up (Spotify not configured, network hiccup,
-   nothing short enough found). Sourced via a real web search each day --
+   suitable recording turns up at all (Spotify not configured, network
+   hiccup, nothing short enough found). Sourced via a real web search each
+   day --
    Claude's own training data isn't a reliable source for exact, current
    halachic rulings (same reason brain/websearch.py exists at all for
    time-sensitive/factual questions). Composed into one concise, TTS-ready
@@ -44,12 +48,25 @@ from .websearch import WebSearchError, search
 _QUERY_HE = "הלכה יומית"
 _QUERY_EN = "daily halacha jewish law today"
 
-# Real short (rabbi-recorded, not TTS) halacha episodes on Spotify -- "דקה של
-# הלכה" ("a minute of halacha") is the one confirmed to actually run ~50s;
-# the others are extra search angles to widen the pool, filtered by
-# _MAX_AUDIO_SECONDS below regardless of how they're titled.
-_AUDIO_SEARCH_QUERIES = ("דקה של הלכה", "הלכה בקצרה", "הלכה יומית קצר")
-_MAX_AUDIO_SECONDS = 75
+# Real (rabbi-recorded, not TTS) halacha episodes on Spotify -- extra search
+# angles to widen the pool, filtered by _MAX_AUDIO_SECONDS below regardless
+# of how they're titled. "הלכה יומית" (bare, no "קצר"/"short" qualifier) is
+# the one that actually matters most: confirmed live it's a real, actively-
+# produced, dated daily halacha series (episode titles carry the Hebrew
+# date) with dozens of episodes in the ~2-4 minute range -- adding it
+# unqualified (rather than only searching for it combined with "short")
+# is what actually surfaces that pool; the "short"-qualified variants alone
+# only ever turned up a handful of literal one-minute clips.
+_AUDIO_SEARCH_QUERIES = (
+    "דקה של הלכה", "הלכה בקצרה", "הלכה יומית קצר", "הלכה יומית", "הלכה ליום",
+)
+# Confirmed live: capping at 75s (only true "one-minute" format clips) left
+# a pool of just 3-5 distinct recordings, some of them literal duplicate
+# uploads of the same clip -- exhausted almost immediately with regular use
+# and started repeating. 300s (5 min) is still a reasonable spoken-teaching
+# length and unlocks ~25 distinct real episodes from the "הלכה יומית" series
+# alone, which is the actual lever that matters here, not the exact number.
+_MAX_AUDIO_SECONDS = 300
 _PLAYED_STATE_PATH = Path(__file__).parent.parent / "logs" / "halacha_audio_played.json"
 
 _SYSTEM_HE = (
