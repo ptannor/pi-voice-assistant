@@ -499,6 +499,30 @@ def skip_track(direction: str = "next") -> str:
         raise SpotifyError(f"Spotify skip track failed: {exc}") from exc
 
 
+def current_track_info() -> str:
+    """What's currently playing (or paused), for the "what's playing?"
+    question -- a real gap before this: skip/seek/stop all existed, but
+    there was no way to ask what the current track/episode actually is.
+    Returns a status string for Claude to turn into a spoken answer; never
+    raises -- a lookup failure just means "can't tell right now", not
+    something worth interrupting the conversation over."""
+    try:
+        sp = _get_client()
+        pb = sp.current_playback()
+    except Exception as exc:
+        return f"status: error_lookup_failed, details: {exc}"
+    if not pb or not pb.get("item"):
+        return "status: not_playing"
+    item = pb["item"]
+    name = item.get("name", "Unknown")
+    if item.get("type") == "episode":
+        artists = item.get("show", {}).get("name", "Podcast")
+    else:
+        artists = ", ".join(a.get("name", "") for a in item.get("artists", []))
+    state = "playing" if pb.get("is_playing") else "paused"
+    return f"status: {state}, track: {name}, artist: {artists}"
+
+
 def stop() -> str:
     """Pause playback on the active device. Returns a short status string;
     raises SpotifyError on failure."""

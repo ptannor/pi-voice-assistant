@@ -130,9 +130,18 @@ class AudioFocusManager:
             except Exception:
                 pass
 
-    def mark_content_stopped(self) -> None:
-        """The user explicitly stopped the music -- don't resume it when the
-        speaking layer releases."""
+    def suppress_resume(self) -> None:
+        """Don't restore the pre-conversation snapshot when the speaking
+        layer releases -- call this whenever a tool executed *during* the
+        current DIALOG/ALERT session has already deliberately changed what's
+        playing (explicitly stopped it, skipped/sought within it, or started
+        something new). Without this, the snapshot captured at acquire()
+        time -- necessarily from *before* any of that happened -- silently
+        overwrites the user's own in-conversation change the moment the
+        conversation ends: confirmed live, "skip to the next song" moved to
+        a new track, then got reverted back to the original song a few
+        seconds later when the conversation closed and the stale snapshot
+        resumed over it."""
         with self._lock:
             self._content_should_resume = False
 
