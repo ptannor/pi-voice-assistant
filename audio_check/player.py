@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import wave
 from pathlib import Path
 
@@ -8,6 +9,19 @@ import sounddevice as sd
 
 from .devices import Device
 from .errors import PlaybackFailed
+
+# sounddevice.play()/wait() manage a single *global* default output stream,
+# not one independent per call -- concurrent calls from different threads
+# race on that shared state instead of queueing cleanly. Confirmed: the
+# timer alarm's looping play_wav() (brain/timer.py) and the wake-word
+# daemon's ack-chime play_wav() (wake_word_daemon.py, played on a separate
+# thread so recording can start immediately) collided this way and hung
+# forever -- stuck in native PortAudio code, so not even interruptible by
+# Ctrl-C. This lock serializes play_wav() calls across threads so a second
+# caller waits its turn instead of corrupting the first's in-flight stream.
+# Deliberately not applied to play_wav_async(), which is fire-and-forget by
+# design and expected to layer over/interrupt whatever's already playing.
+_playback_lock = threading.Lock()
 
 
 def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
@@ -64,8 +78,9 @@ def play_wav(filepath: Path, device: Device) -> None:
     target_sr = int(device.default_samplerate)
     audio, sample_rate = _load_wav(filepath, target_sr=target_sr)
     try:
-        sd.play(audio, samplerate=sample_rate, device=device.index)
-        sd.wait()
+        with _playback_lock:
+            sd.play(audio, samplerate=sample_rate, device=device.index)
+            sd.wait()
     except sd.PortAudioError as exc:
         raise PlaybackFailed(
             f"Playback failed on '{device.name}' at {sample_rate} Hz: {exc}. "
