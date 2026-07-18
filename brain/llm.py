@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -191,7 +191,11 @@ silently miss the exact thing being asked about. Use cancel_calendar_event
 when asked to cancel or remove one. These are spoken aloud on this device at
 the time they're due -- say so if it's relevant context (e.g. if asked how
 reminders work), but
-don't over-explain on every single add.
+don't over-explain on every single add. Every reminder is automatically
+categorized as critical, morning, or regular importance behind the scenes;
+you'll be told below when one needs your attention (a check-in on an
+unhandled critical one, or a disambiguation question nobody answered on
+Telegram) -- otherwise don't mention this categorization unprompted.
 
 If a web_search only gets you a partial answer (e.g. a list of movies but not
 showtimes), don't tell the user to go check a website or app themselves --
@@ -326,6 +330,76 @@ def _timer_prompt_line() -> str:
     return ""
 
 
+def _critical_reminders_prompt_line() -> str:
+    # The conversational half of the redesigned critical-reminder nudge (see
+    # brain/reminders.py's _critical_nudge_loop for the proactive spoken
+    # half) -- both share the same last_nudged_at bookkeeping in
+    # reminders.py's persisted state so a chat mention and a proactive
+    # spoken check-in don't double up within the same
+    # CRITICAL_NUDGE_INTERVAL_HOURS window.
+    #
+    # Marks a due item as nudged the moment it's shown to Claude, not only
+    # if Claude's reply actually ends up mentioning it -- detecting whether
+    # the reply really raised it would need parsing Claude's own text, which
+    # isn't worth it for a cadence that's already meant to be approximate
+    # ("a few times a day"), not exact.
+    try:
+        from . import reminders
+        pending = reminders.pending_critical_items()
+    except Exception:
+        return ""
+    if not pending:
+        return ""
+
+    now = datetime.now()
+    due = []
+    for item in pending:
+        try:
+            last_nudged = datetime.fromisoformat(item["last_nudged_at"])
+        except ValueError:
+            last_nudged = now
+        if now - last_nudged >= timedelta(hours=reminders.CRITICAL_NUDGE_INTERVAL_HOURS):
+            due.append(item)
+    if not due:
+        return ""
+
+    for item in due:
+        reminders.mark_critical_nudged(item["id"])
+    titles = ", ".join(item["title"] for item in due)
+    return (
+        f"\nThere are unhandled critical reminders: {titles}. Naturally work a brief "
+        "check-in about one of them into this conversation (e.g. \"by the way, have "
+        "you sorted out X yet?\") -- don't force it as the very first thing you say if "
+        "the conversation is about something unrelated, and don't list several "
+        "mechanically. If the user says they've handled one, call the "
+        "acknowledge_reminder tool.\n"
+    )
+
+
+def _uncertain_classification_prompt_line() -> str:
+    # Voice escalation for the Telegram-first disambiguation flow (see
+    # brain/classify.py's module docstring) -- only surfaces once a question
+    # has gone unanswered on Telegram past UNCERTAIN_ESCALATE_AFTER_HOURS;
+    # before that, it's Telegram-only (see telegram_bot_daemon.py's bare-word
+    # reply handling).
+    try:
+        from . import classify
+        due = classify.due_for_voice_escalation()
+    except Exception:
+        return ""
+    if not due:
+        return ""
+    item = due[0]  # oldest first, one at a time
+    return (
+        f"\nThere's a calendar reminder titled \"{item['title']}\" that hasn't been "
+        "categorized yet (critical, morning, or regular importance), and nobody "
+        "answered on Telegram. Naturally ask the user, at some point in this "
+        "conversation, whether it's critical, morning, or regular -- then call the "
+        "classify_uncertain_reminder tool with their answer. Don't force it as the "
+        "very first thing you say if the conversation is about something unrelated.\n"
+    )
+
+
 def _last_tool_result_str(messages: list[dict]) -> str | None:
     """The content string of the most recently executed tool_result in
     `messages`, or None if this turn had no tool call at all."""
@@ -450,7 +524,7 @@ def ask(
     # cache tokens, 4,252 wrote a full cache entry), and this whole
     # system+tools prompt is only ~3,900 tokens. Below that floor, marking a
     # block cacheable is a pure no-op -- it was silently doing nothing.
-    system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()
+    system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line() + _critical_reminders_prompt_line() + _uncertain_classification_prompt_line()
     messages = (history or []) + [
         {"role": "user", "content": f"[The user spoke in {language_name}] {user_text}"}
     ]
@@ -483,7 +557,7 @@ def ask(
             ]
             messages.append({"role": "user", "content": tool_results})
             # Recompute in case a tool (like set_voice_mode or remember) updated state
-            system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()
+            system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line() + _critical_reminders_prompt_line() + _uncertain_classification_prompt_line()
             response = _timed(
                 "claude",
                 client.messages.create,
@@ -498,7 +572,7 @@ def ask(
             # read aloud verbatim once. Discard it and force one final,
             # tool-free turn on the same history so Claude commits to its
             # best answer from what it's already gathered.
-            system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line()
+            system_prompt = SYSTEM_PROMPT + _current_datetime_line() + memory_prompt_block() + _funny_voice_prompt_line() + _timer_prompt_line() + _critical_reminders_prompt_line() + _uncertain_classification_prompt_line()
             response = _timed(
                 "claude_forced_final",
                 client.messages.create,
