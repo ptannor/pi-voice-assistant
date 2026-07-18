@@ -83,12 +83,17 @@ def _is_likely_hallucination(text: str) -> bool:
     return clean in _HALLUCINATION_PHRASES
 
 
-def _transcribe_forced(client: Groq, wav_path: Path, language: str) -> tuple[str, float]:
+def _transcribe_forced(client: Groq, wav_path: Path, language: str) -> tuple[str, float, float]:
     """Transcribe with `language` forced (not auto-detected).
 
-    Returns (text, confidence) -- confidence is the mean `avg_logprob` across
-    segments (closer to 0 = more confident; very negative = the model wasn't
-    sure this was really speech in this language).
+    Returns (text, confidence, no_speech_prob) -- confidence is the mean
+    `avg_logprob` across segments (closer to 0 = more confident; very
+    negative = the model wasn't sure this was really speech in this
+    language). `no_speech_prob` is Whisper's own mean estimate that a
+    segment contains no speech at all -- its dedicated signal for exactly
+    the silence/near-silence hallucination case (see the filter in
+    transcribe() below), distinct from avg_logprob (confidence in whichever
+    words it did produce, even if it shouldn't have produced any).
     """
     kwargs = {}
     prompt = _FAMILY_NAME_PROMPTS.get(language)
@@ -104,7 +109,8 @@ def _transcribe_forced(client: Groq, wav_path: Path, language: str) -> tuple[str
         )
     segments = result.segments or []
     confidence = sum(seg["avg_logprob"] for seg in segments) / len(segments) if segments else float("-inf")
-    return result.text.strip(), confidence
+    no_speech_prob = sum(seg["no_speech_prob"] for seg in segments) / len(segments) if segments else 1.0
+    return result.text.strip(), confidence, no_speech_prob
 
 
 def transcribe(wav_path: Path, conversation_language: str | None = None) -> tuple[str, str]:
@@ -144,15 +150,18 @@ def transcribe(wav_path: Path, conversation_language: str | None = None) -> tupl
     client = Groq(api_key=GROQ_API_KEY)
     try:
         if conversation_language:
-            text, _ = _transcribe_forced(client, wav_path, conversation_language)
+            text, confidence, no_speech_prob = _transcribe_forced(client, wav_path, conversation_language)
             language = conversation_language
         else:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 future_en = pool.submit(_transcribe_forced, client, wav_path, "en")
                 future_he = pool.submit(_transcribe_forced, client, wav_path, "he")
-                text_en, confidence_en = future_en.result()
-                text_he, confidence_he = future_he.result()
-            text, language = (text_he, "he") if confidence_he >= (confidence_en - 0.15) else (text_en, "en")
+                text_en, confidence_en, no_speech_en = future_en.result()
+                text_he, confidence_he, no_speech_he = future_he.result()
+            if confidence_he >= (confidence_en - 0.15):
+                text, language, confidence, no_speech_prob = text_he, "he", confidence_he, no_speech_he
+            else:
+                text, language, confidence, no_speech_prob = text_en, "en", confidence_en, no_speech_en
             # Logged (not just available in a debugger) because the 0.15 Hebrew
             # bias below is a guess, not a measured threshold -- confirmed wrong
             # in BOTH directions (Hebrew "מה השעה" heard as English "Masha", and
@@ -212,6 +221,20 @@ def transcribe(wav_path: Path, conversation_language: str | None = None) -> tupl
     if language == "en" and HEBREW_RE.search(text):
         language = "he"
 
-    if _is_sound_effect_caption(text) or _is_likely_hallucination(text):
+    # Whisper's own confidence signals, straight from the API, as a defense
+    # against the same silence/near-silence hallucination class as
+    # _HALLUCINATION_PHRASES above but without needing to enumerate every
+    # stock phrase it might produce: no_speech_prob is its own estimate that
+    # a segment wasn't speech at all, avg_logprob is its confidence in
+    # whatever words it output regardless. Requiring *both* to be bad avoids
+    # discarding real speech that's just quiet (low no_speech_prob is enough
+    # signal there) or a genuinely low-confidence but real utterance (high
+    # no_speech_prob alone isn't enough either) -- only the combination
+    # reliably means "there was no real speech here."
+    NO_SPEECH_PROB_THRESHOLD = 0.6
+    LOW_CONFIDENCE_THRESHOLD = -0.5
+    likely_silence_hallucination = no_speech_prob > NO_SPEECH_PROB_THRESHOLD and confidence < LOW_CONFIDENCE_THRESHOLD
+
+    if _is_sound_effect_caption(text) or _is_likely_hallucination(text) or likely_silence_hallucination:
         text = ""
     return text, language
