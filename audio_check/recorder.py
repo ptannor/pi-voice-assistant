@@ -107,6 +107,7 @@ INPUT_STREAM_RETRY_DELAY_SECONDS = 0.2
 def _open_input_stream(device: Device, channels: int, sample_rate: int, callback) -> sd.InputStream:
     attempt = 0
     while True:
+        stream = None
         try:
             stream = sd.InputStream(
                 device=device.index,
@@ -120,6 +121,17 @@ def _open_input_stream(device: Device, channels: int, sample_rate: int, callback
             stream.start()
             return stream
         except sd.PortAudioError:
+            if stream is not None:
+                # The constructor above already opens a real PortAudio stream
+                # handle (Pa_OpenStream) before start() is ever called -- a
+                # failed start() still leaves that handle allocated. Close it
+                # before retrying or raising, or it leaks and contends with
+                # (and can corrupt) every stream subsequently opened on this
+                # device for the rest of the process's life. Confirmed this
+                # was the real cause of a much worse-sounding regression: not
+                # occasional garbled audio, but corrupted-sounding captures on
+                # nearly every turn once a single retry had occurred.
+                stream.close()
             if attempt >= INPUT_STREAM_OPEN_RETRIES:
                 raise
             attempt += 1
