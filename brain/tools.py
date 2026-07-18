@@ -19,7 +19,7 @@ for it and TOOLS is sent to the API as-is.
 """
 from __future__ import annotations
 
-from . import classify, gcal, halacha, memory, reminders, spotify, telegram_push, timer, vault
+from . import classify, gcal, halacha, memory, reminders, spotify, telegram_push, timer, vault, volume
 from .calculator import calculate
 from .language import LANGUAGE_NAMES
 from .mode import set_funny_voice
@@ -616,6 +616,24 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
 
     if name == "calculate":
         return calculate(tool_input["expression"])
+
+    if name == "volume_up":
+        try:
+            return volume.volume_up()
+        except volume.VolumeError as exc:
+            return f"status: error_volume_failed, details: {exc}"
+
+    if name == "volume_down":
+        try:
+            return volume.volume_down()
+        except volume.VolumeError as exc:
+            return f"status: error_volume_failed, details: {exc}"
+
+    if name == "set_volume":
+        try:
+            return volume.set_volume(tool_input["level"])
+        except volume.VolumeError as exc:
+            return f"status: error_volume_failed, details: {exc}"
 
     if name == "set_voice_mode":
         funny = tool_input["mode"] == "funny"
