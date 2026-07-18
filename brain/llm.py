@@ -176,7 +176,7 @@ expensive failure mode in a spoken conversation.
 You will sometimes get a transcribed query that contains a clear command mixed with side-conversations, background noises, or speech-to-text garbling (e.g. they say "לך 20 שנית אחורה... תגידי לי, את מבינה...").
 1. If a clear music control command (such as playing, seeking/skipping, or stopping music) is present in the query, prioritize executing that command immediately by calling the appropriate tool. Do not ask for clarification or mention the garbled text if a command is present.
 2. Speech-to-text sometimes mishears names (especially in Hebrew). If a search for a garbled name turns up a very similar-sounding real name, treat that as the intended target instead of assuming it's something different.
-3. If something is currently playing (or was just playing) and the query is otherwise too garbled to make out a clear command, do NOT ask a broad "do you want to skip/stop/something else?" clarifying question -- call skip_track_hebrew/english (direction "next") directly instead, with no confirmation needed first. Skipping to the next track is nearly free to get "wrong": worst case the household says "next" again or names something specific, versus a clarifying question being a dead end exactly when they're mid-way through trying to change the song and STT keeps mangling short utterances. Only skip this default if the garbled text actually contains a different recognizable signal instead (an explicit stop word, a specific song/artist name, seek wording like "back"/"forward", or a "what's playing" pattern) -- prefer that specific match over the skip-to-next default whenever one's actually there.
+3. A dedicated classifier already runs before you're ever consulted, for exactly this situation (a short utterance while music is playing) -- it already caught and directly handled the clear cases (skip/stop/volume), so by the time you're reasoning about a music-adjacent query yourself, it's because the utterance was longer than that classifier handles or it wasn't confident either. Don't mechanically force a skip_track call here -- use your own judgment same as any other query, just keep in mind that if something is currently playing (or was just playing) and you genuinely can't tell what a short, odd fragment means, it's more likely a mangled music-control attempt than an actual unrelated request, so lean toward the most plausible one of skip/stop/seek/what's-playing over a broad "I didn't understand, do you want to skip/stop/something else?" clarifying question.
 
 When the user asks to play a song, podcast, show, episode, or playlist (e.g., using "תנגן", "תשמיע", "תשים פודקאסט", "play podcast", "play", "playlist", "פלייליסט"):
 1. If the user's request appears to contain lyrics from a song (e.g., they ask for "the song that says [lyrics]"), first call the web_search tool to look up the song title and artist based on those lyrics.
@@ -640,6 +640,34 @@ def ask(
         return result
     language_name = LANGUAGE_NAMES[language]
     lang_tools = get_tools_for_language(language)
+
+    # Dedicated classification for short utterances while music is playing --
+    # see brain/music_intent.py's docstring for why this exists instead of
+    # relying on the main conversational call below to both read a garbled
+    # transcript *and* decide how to act on it. Gated on a short word count
+    # so this never adds cost/latency to an ordinary longer question just
+    # because music happens to be on. Only short-circuits the rest of this
+    # turn when the classifier is actually confident about one of its four
+    # categories -- anything else (including a real but short question like
+    # "what time is it") falls through to the normal flow below unaffected.
+    if len(user_text.split()) <= 6:
+        from . import spotify as _spotify
+        try:
+            music_is_active = _spotify.is_playing()
+        except Exception:
+            music_is_active = False
+        if music_is_active:
+            from . import music_intent
+            category = _timed("music_intent_classify", music_intent.classify_music_intent, user_text)
+            if category != music_intent.UNCLEAR:
+                if on_tool_call is not None:
+                    try:
+                        on_tool_call()
+                    except Exception:
+                        pass
+                reply, tool_label = music_intent.execute(category, language)
+                timeline.append((f"tool:{tool_label}", 0.0))
+                return reply, (history or []), timeline
 
     # Computed fresh per call (not baked into the static SYSTEM_PROMPT, which
     # is built once at import time) so a long-running daemon always gives
