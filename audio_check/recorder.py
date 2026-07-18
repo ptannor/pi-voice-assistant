@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import time
 import wave
 from pathlib import Path
 
@@ -93,6 +94,37 @@ CHUNK_SAMPLES = 1600  # 100ms at 16kHz
 # comfortably longer than an isolated one-chunk noise spike.
 MIN_SPEECH_RUN_SECONDS = 0.3
 
+# macOS CoreAudio's AUHAL backend occasionally fails to start a stream with
+# "Internal PortAudio error" (-9986) -- confirmed live, right after a dense
+# burst of conversation turns (many stream opens/closes in quick
+# succession). Transient: a brief pause is usually enough for it to settle,
+# so one retry avoids losing the whole turn (and needing a fresh wake word)
+# to what's typically a passing hiccup rather than a real device problem.
+INPUT_STREAM_OPEN_RETRIES = 1
+INPUT_STREAM_RETRY_DELAY_SECONDS = 0.2
+
+
+def _open_input_stream(device: Device, channels: int, sample_rate: int, callback) -> sd.InputStream:
+    attempt = 0
+    while True:
+        try:
+            stream = sd.InputStream(
+                device=device.index,
+                channels=channels,
+                samplerate=sample_rate,
+                dtype="int16",
+                blocksize=CHUNK_SAMPLES,
+                latency='high',
+                callback=callback,
+            )
+            stream.start()
+            return stream
+        except sd.PortAudioError:
+            if attempt >= INPUT_STREAM_OPEN_RETRIES:
+                raise
+            attempt += 1
+            time.sleep(INPUT_STREAM_RETRY_DELAY_SECONDS)
+
 
 def record_until_silence(
     device: Device,
@@ -139,15 +171,8 @@ def record_until_silence(
     consecutive_loud_chunks = 0
     min_speech_run_chunks = max(1, round(MIN_SPEECH_RUN_SECONDS / chunk_duration))
 
-    with sd.InputStream(
-        device=device.index,
-        channels=channels,
-        samplerate=sample_rate,
-        dtype="int16",
-        blocksize=CHUNK_SAMPLES,
-        latency='high',
-        callback=callback,
-    ):
+    stream = _open_input_stream(device, channels, sample_rate, callback)
+    try:
         while elapsed < max_seconds:
             chunk = audio_queue.get()
 
@@ -181,6 +206,9 @@ def record_until_silence(
                     break
             elif elapsed >= initial_timeout:
                 return None
+    finally:
+        stream.stop()
+        stream.close()
 
     if not chunks:
         return None
