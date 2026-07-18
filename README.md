@@ -338,12 +338,11 @@ then confirm the lockfile only references `pypi.org` before committing.
 `wake_word_daemon.py` listens continuously for **two** wake words at once:
 **"Alexa"** and **"Mendy"** (the custom-trained "Menachem Mendel" model at
 [`models/mendy.onnx`](models/mendy.onnx)). Whichever one you say determines
-which language the *first* turn of that conversation is transcribed in —
-Alexa for English, Mendy for Hebrew — deterministically, instead of guessing
-from audio alone. Follow-up turns within the same conversation still
-auto-detect language fresh per utterance (so you can switch languages
-mid-conversation), since only the wake word itself is a reliable enough
-signal to skip that detection.
+which language *every* turn of that conversation is transcribed and replied
+in — Alexa for English, Mendy for Hebrew — deterministically, instead of
+guessing from audio alone. This is fixed for the whole conversation, not
+just the first turn: mid-conversation language switches aren't supported,
+so say the wake word for the language you want, every time.
 
 This exists because per-utterance English/Hebrew auto-detection alone proved
 unreliable in both directions — confirmed in testing: a quick "מה השעה"
@@ -353,7 +352,8 @@ word you used to start the conversation doesn't have that ambiguity.
 
 When either wake word fires: plays a short acknowledgment chime, records ~6
 seconds of your question, transcribes it, sends it to Claude, and speaks the
-reply back — in whichever language you spoke. This uses
+reply back — in that wake word's language (English for Alexa, Hebrew for
+Mendy), not whatever language you happened to speak. This uses
 [openWakeWord](https://github.com/dscripka/openWakeWord)'s free, fully
 open-source pretrained "alexa" model for English wake-word detection — **no
 account, no API key, no signup** required for that part, unlike Porcupine
@@ -779,7 +779,7 @@ uv run python -m shabbat.gate
 - Confirm the full Claude conversation loop end-to-end on real hardware once
   a working Pi is available again (see [Wake word](#wake-word-alexa--mendy--talking-to-claude))
 - ~~Evaluate dual wake words...~~ Done — "Alexa"/"Mendy" now determine
-  turn-1 language deterministically (see [Wake
+  the whole conversation's language deterministically (see [Wake
   word](#wake-word-alexa--mendy--talking-to-claude)). Confirmed on this
   dev Mac that a single `Model(wakeword_models=[...])` instance runs both
   wake words off one shared embedding/melspectrogram pass (only the small
