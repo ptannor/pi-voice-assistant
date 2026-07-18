@@ -57,7 +57,7 @@ from audio_check.errors import AudioCheckError, PlaybackFailed, RecordingFailed
 from audio_check.player import play_wav, play_wav_async
 from audio_check.recorder import SILENCE_RMS_THRESHOLD, record_until_silence
 from brain.config import WAKE_WORD_MODEL_PATH
-from brain.llm import STOP_WORDS, BrainError, ask
+from brain.llm import BrainError, ask, contains_stop_word
 from brain.respond import speak_reply, speak_reply_chunks
 from brain.reminders import start as start_reminders
 from brain.stt import TranscriptionError, transcribe
@@ -456,8 +456,7 @@ def _handle_conversation(
             #     revert that change. Confirmed live: "next song" moved to a
             #     new track, then jumped back to the original song when the
             #     conversation ended and the stale snapshot resumed over it.
-            lower_text = (text or "").lower()
-            said_stop = any(w in lower_text for w in STOP_WORDS)
+            said_stop = contains_stop_word(text or "")
             stop_music_ran = any("stop_music" in stage for stage, _ in ask_timeline)
             cancel_timer_ran = any("cancel_timer" in stage for stage, _ in ask_timeline)
             content_changed_ran = any(

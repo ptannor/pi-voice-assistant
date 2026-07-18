@@ -40,9 +40,10 @@ _LOCATION_PROMPT_LINE = (
     "assuming the US or anywhere else. If you're not fully certain of a "
     "specific, current fact tied to this location (e.g. a phone number, "
     "address, or hours), use the web_search tool to check it rather than "
-    "reciting one from memory. Always give temperatures in Celsius -- if a "
-    "web_search result states one in Fahrenheit, convert it yourself rather "
-    "than repeating the Fahrenheit figure; never state a Fahrenheit number.\n"
+    "reciting one from memory. Always give temperatures in Celsius only -- "
+    "if a web_search result states one in Fahrenheit, convert it yourself "
+    "and say just the Celsius figure; never state a Fahrenheit number, not "
+    "even as a parenthetical alongside the Celsius one.\n"
     if HOUSEHOLD_LOCATION
     else ""
 )
@@ -142,6 +143,18 @@ snippet is often a vague description, not exact figures -- if you don't
 have the precise number, say plainly which part you know and which you
 don't (e.g. "it's playing today, but I don't have the exact time") instead
 of stating something specific-sounding that you're inferring or guessing.
+
+When search results are incomplete, conflicting, or messy, never narrate
+your own research process out loud -- e.g. never say things like "the
+search results show conflicting data," "one source mentions X but others
+are unclear," "I'm not getting a completely clear picture," or "let me
+check that." That's you thinking out loud, not an answer, and it's
+confusing and tedious when read aloud by TTS. Instead, silently pick your
+single best-guess answer from whatever you found and say just that, in one
+or two sentences, folding any real uncertainty into a short clause (e.g.
+"looks like around 32 degrees with a chance of showers, though I'm not
+fully certain" is fine; a paragraph describing what each source said is
+not).
 
 Speech-to-text -- especially Hebrew -- garbles words constantly: wrong
 words, malformed sentences, missing or extra syllables, even on a clearly
@@ -308,8 +321,24 @@ _LANGUAGE_FALLBACK_REPLY = {
 # what counts as a "stop" utterance. Includes the imperative/infinitive forms
 # Hebrew speakers actually use ("תפסיק"/"תפסיקי"/"להפסיק"), not just the more
 # literal "עצור"/"עצרי" -- confirmed a real gap: a user saying "תפסיק" got no
-# recognition at all before these were added.
-STOP_WORDS = ("עצור", "עצרי", "תעצור", "תעצרי", "תפסיק", "תפסיקי", "להפסיק", "סטופ", "stop")
+# recognition at all before these were added. "די" (a very common casual
+# "enough"/"stop") was added later -- see contains_stop_word() below for why
+# it needs word-boundary matching, not a plain substring check.
+STOP_WORDS = ("עצור", "עצרי", "תעצור", "תעצרי", "תפסיק", "תפסיקי", "להפסיק", "סטופ", "stop", "די")
+
+_STOP_WORD_RE = re.compile("|".join(rf"\b{re.escape(w)}\b" for w in STOP_WORDS))
+
+
+def contains_stop_word(text: str) -> bool:
+    """True if `text` contains one of STOP_WORDS as a whole word.
+
+    Word-boundary matching, not a plain substring check, because "די" is
+    only two letters -- a substring check would false-positive on any
+    longer word that happens to contain ד followed by י (e.g. "מדינה",
+    "ידיים"), which a plain `"די" in text` check can't tell apart from the
+    user actually saying "די".
+    """
+    return bool(_STOP_WORD_RE.search(text.lower()))
 
 # Reused across calls instead of constructing a fresh client (and its TLS
 # handshake) on every single turn.
@@ -762,7 +791,7 @@ def ask(
     # A bare "stop" must never get a spoken reply, even when there was
     # nothing to stop (no tool ended up being called) -- the user never
     # wants an acknowledgment like "Okay!" for this word, only the action.
-    if any(w in user_text.lower() for w in STOP_WORDS):
+    if contains_stop_word(user_text):
         reply = ""
 
     reply = _strip_voice_unfriendly_formatting(reply)
