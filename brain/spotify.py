@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -134,28 +135,58 @@ def _local_spotify_running() -> bool:
     return res == "true"
 
 
-def _active_device_id(sp) -> str | None:
-    """Prefer the currently-active device; then SPOTIFY_DEVICE_NAME (see
-    config.py) if configured; only then fall back to an arbitrary one.
+def _local_device_name_hint() -> str:
+    """The local machine's own short hostname (domain suffix stripped,
+    lowercased) -- used to find "this machine's own Spotify Connect device"
+    in _active_device_id below. Matched as a case-insensitive substring
+    rather than an exact match, since the Spotify device name a Connect
+    client registers isn't always identical to the OS hostname (raspotify's
+    own device_name setting on the Pi, or macOS's system Spotify Connect
+    naming), just related to it -- e.g. hostname "philpta-mbp.lan" against
+    a registered device named "philpta-mbp".
+    """
+    return socket.gethostname().split(".")[0].lower()
 
-    That last fallback used to be the default when nothing was active --
-    confirmed broken: Spotify's device list order isn't "most recent" or
-    "nearest", so this silently played on whichever device happened to sort
-    first (once, a household member's phone instead of the intended
-    speaker). SPOTIFY_DEVICE_NAME gives a real fallback signal instead of
-    picking blind; only when that's unset (or doesn't match anything
-    currently registered) does this fall back to the old arbitrary pick.
+
+def _active_device_id(sp) -> str | None:
+    """Prefer whichever Spotify Connect device corresponds to the machine
+    this script is actually running on (see _local_device_name_hint) --
+    the household has many devices on one Spotify account (phones, other
+    computers), and playback should always target the one the assistant
+    itself runs from, not whichever device Spotify happens to consider
+    "active" (that can be stale -- e.g. a phone last used hours ago still
+    reporting is_active) or an arbitrary pick.
+
+    Falls back to SPOTIFY_DEVICE_NAME (a manual override for when the local
+    hostname doesn't usefully match this machine's registered device name
+    at all), then Spotify's own is_active flag, then an arbitrary device.
+
+    That last fallback used to be the default whenever nothing local
+    matched -- confirmed broken: Spotify's device list order isn't "most
+    recent" or "nearest", so this silently played on whichever device
+    happened to sort first (once, a household member's phone instead of
+    the intended speaker).
     """
     devices = sp.devices().get("devices", [])
     if not devices:
         return None
-    for device in devices:
-        if device.get("is_active"):
-            return device["id"]
+
+    host_hint = _local_device_name_hint()
+    if host_hint:
+        for device in devices:
+            name = device.get("name", "").lower()
+            if name and (host_hint in name or name in host_hint):
+                return device["id"]
+
     if SPOTIFY_DEVICE_NAME:
         for device in devices:
             if SPOTIFY_DEVICE_NAME.lower() in device.get("name", "").lower():
                 return device["id"]
+
+    for device in devices:
+        if device.get("is_active"):
+            return device["id"]
+
     return devices[0]["id"]
 
 
