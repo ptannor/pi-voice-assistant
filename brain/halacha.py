@@ -2,14 +2,15 @@
 
 Two ways to deliver it, tried in this order:
 
-1. **A real short recording** (pick_short_halacha_episode) -- searches the
-   household's existing Spotify catalog access for actual short (real rabbi,
-   real audio) halacha episodes, e.g. the "דקה של הלכה" ("A minute of
-   halacha") series, and plays one via brain/spotify.py's existing
-   play()/search infrastructure -- reusing the exact same Spotify plumbing
-   the music-playback tools already use, not a new audio pipeline. Much
-   better listening experience than TTS reading composed text aloud.
-   Tracks which episode ids have already been played (logs/ file, mirrors
+1. **A real short recording** (pick_short_halacha_episode) -- samples a
+   random page from one of a few known, prolific real (rabbi-recorded, not
+   TTS) daily halacha shows' own episode back-catalogs on Spotify (see
+   _HALACHA_SHOW_IDS -- hundreds to low-thousands of episodes each), and
+   plays one via brain/spotify.py's existing play() infrastructure --
+   reusing the exact same Spotify plumbing the music-playback tools already
+   use, not a new audio pipeline. Much better listening experience than TTS
+   reading composed text aloud. Tracks which episode ids have already been
+   played (logs/ file, mirrors
    shabbat/gate.py's fired-id state pattern) so the same clip doesn't repeat
    while there's still a fresh one available -- once the visible pool is
    exhausted, repeats are allowed rather than failing (real recordings are
@@ -48,24 +49,30 @@ from .websearch import WebSearchError, search
 _QUERY_HE = "הלכה יומית"
 _QUERY_EN = "daily halacha jewish law today"
 
-# Real (rabbi-recorded, not TTS) halacha episodes on Spotify -- extra search
-# angles to widen the pool, filtered by _MAX_AUDIO_SECONDS below regardless
-# of how they're titled. "הלכה יומית" (bare, no "קצר"/"short" qualifier) is
-# the one that actually matters most: confirmed live it's a real, actively-
-# produced, dated daily halacha series (episode titles carry the Hebrew
-# date) with dozens of episodes in the ~2-4 minute range -- adding it
-# unqualified (rather than only searching for it combined with "short")
-# is what actually surfaces that pool; the "short"-qualified variants alone
-# only ever turned up a handful of literal one-minute clips.
-_AUDIO_SEARCH_QUERIES = (
-    "דקה של הלכה", "הלכה בקצרה", "הלכה יומית קצר", "הלכה יומית", "הלכה ליום",
+# Real (rabbi-recorded, not TTS), actively-produced daily/short halacha shows
+# on Spotify -- id -> display name (for the comment/debugging only, not used
+# at runtime). Found by searching type="show" for "הלכה יומית": each has
+# hundreds to low-thousands of real episodes, most a few minutes long.
+# Confirmed a keyword search over individual episodes (the old approach)
+# only ever turns up a handful of results (Spotify's episode search caps at
+# 10 per query and doesn't surface anywhere near a show's full catalog) --
+# going straight to a show's own episode list is what actually unlocks its
+# whole back-catalog. Hard-coded rather than re-searched by show name every
+# call (that's an extra network round-trip; these ids are stable) -- update
+# this list if a show is ever removed or a better one turns up.
+_HALACHA_SHOW_IDS = (
+    "6CzeeC3wATileSU3DjhNQk",  # הפנינה היומית - הלכה יומית מפניני הלכה, ~1476 episodes
+    "6juflBDzUlyCj8WALMNrWM",  # הלכה יומית - פינת ההלכה לאור המשפט העברי, ~718 episodes
+    "372wcgv3dxKLcqRfl7wsTq",  # הרה"ג אהרון בוטבול, ~744 episodes
 )
-# Confirmed live: capping at 75s (only true "one-minute" format clips) left
-# a pool of just 3-5 distinct recordings, some of them literal duplicate
-# uploads of the same clip -- exhausted almost immediately with regular use
-# and started repeating. 300s (5 min) is still a reasonable spoken-teaching
-# length and unlocks ~25 distinct real episodes from the "הלכה יומית" series
-# alone, which is the actual lever that matters here, not the exact number.
+_EPISODES_PER_PAGE = 50  # Spotify's max page size for a show's episode list
+# Confirmed live: capping at 75s (only true "one-minute format" clips, back
+# when sourced from individual keyword search) left a pool of just 3-5
+# distinct recordings -- exhausted almost immediately with regular use and
+# started repeating. 300s (5 min) is still a reasonable spoken-teaching
+# length; sampling a random page from the show catalogs above, ~1 in 4
+# episodes falls under it, so across their combined ~2900 total episodes
+# that's still several hundred distinct candidates, not a handful.
 _MAX_AUDIO_SECONDS = 300
 _PLAYED_STATE_PATH = Path(__file__).parent.parent / "logs" / "halacha_audio_played.json"
 
@@ -124,10 +131,19 @@ def _save_played(played: set[str]) -> None:
 
 
 def pick_short_halacha_episode() -> dict | None:
-    """Search the household's Spotify catalog access for a short, real
-    halacha recording and return {"uri", "name", "duration_s"} for the
-    caller to play via brain/spotify.py's play() -- or None if nothing
-    suitable turns up (caller falls back to get_daily_halacha_text)."""
+    """Sample a random page from one of _HALACHA_SHOW_IDS's real back-catalogs
+    and return {"uri", "name", "duration_s"} for the caller to play via
+    brain/spotify.py's play() -- or None if nothing suitable turns up at all
+    (caller falls back to get_daily_halacha_text).
+
+    Shows are tried in random order; each is asked for one randomly-offset
+    page of its own episode list (not a keyword search -- see
+    _HALACHA_SHOW_IDS's comment for why that surfaces far more real
+    candidates). Stops at the first show whose sampled page has something
+    not already played, so this is normally one Spotify round-trip (a show
+    lookup for its episode count, plus one page fetch), not a scan of every
+    show's entire catalog.
+    """
     from . import spotify
 
     try:
@@ -135,23 +151,34 @@ def pick_short_halacha_episode() -> dict | None:
     except spotify.SpotifyError:
         return None
 
+    played = _load_played()
+    show_ids = list(_HALACHA_SHOW_IDS)
+    random.shuffle(show_ids)
+
     candidates: dict[str, dict] = {}
-    for query in _AUDIO_SEARCH_QUERIES:
+    for show_id in show_ids:
         try:
-            results = sp.search(q=query, type="episode", limit=10)
+            total = sp.show(show_id).get("total_episodes") or 0
+            if total <= 0:
+                continue
+            offset = random.randint(0, max(0, total - _EPISODES_PER_PAGE))
+            page = sp.show_episodes(show_id, limit=_EPISODES_PER_PAGE, offset=offset)
         except Exception:
             continue
-        for item in results.get("episodes", {}).get("items", []):
+
+        for item in page.get("items", []):
             duration_ms = item.get("duration_ms")
             if duration_ms and duration_ms / 1000 <= _MAX_AUDIO_SECONDS:
                 candidates[item["id"]] = item
 
+        if any(k not in played for k in candidates):
+            break  # this page already has something fresh -- no need to sample another show
+
     if not candidates:
         return None
 
-    played = _load_played()
     fresh = {k: v for k, v in candidates.items() if k not in played}
-    pool = fresh or candidates  # pool exhausted -- allow a repeat rather than nothing
+    pool = fresh or candidates  # every sampled page happened to be fully played -- allow a repeat rather than nothing
 
     chosen_id = random.choice(list(pool.keys()))
     chosen = pool[chosen_id]
