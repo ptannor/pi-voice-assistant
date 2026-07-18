@@ -562,7 +562,14 @@ TOOLS = [
 
 # Tools not listed here default to both languages.
 TOOL_LANGUAGES: dict[str, list[str]] = {
-    "get_daily_halacha": ["he"],
+    # Deliberately NOT restricted to Hebrew -- confirmed a real gap: a
+    # Hebrew-only restriction here means the tool is never even offered to
+    # Claude during an English conversation, so "Alexa, give me a Dvar
+    # Torah" had no way to reach it at all and fell back to the get_parsha
+    # stub instead. The Hebrew-content requirement (see brain/llm.py's
+    # Torah-content instruction) is enforced by forcing language="he" in the
+    # dispatch below, not by gating tool availability on conversation
+    # language -- those are different things.
     "ask_mishna_question": ["he"],
     "tell_joke_english": ["en"],
     "tell_joke_hebrew": ["he"],
@@ -778,7 +785,12 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
                 return f"status: playing, track: {episode['name']}, artist: הלכה יומית"
             except spotify.SpotifyError:
                 pass  # fall through to the TTS-composed teaching below
-        return halacha.get_daily_halacha_text(language)
+        # Forced "he" regardless of `language` (this tool is now callable
+        # from an English conversation too, see TOOL_LANGUAGES above) --
+        # Torah content stays in Hebrew always, per brain/llm.py's system
+        # prompt instruction; Claude speaks its own surrounding reply in
+        # whatever language the user's using, this is just the source text.
+        return halacha.get_daily_halacha_text("he")
 
     if name == "get_zmanim":
         from datetime import datetime
