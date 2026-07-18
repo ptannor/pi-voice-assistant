@@ -19,7 +19,7 @@ for it and TOOLS is sent to the API as-is.
 """
 from __future__ import annotations
 
-from . import gcal, halacha, memory, spotify, timer
+from . import classify, gcal, halacha, memory, reminders, spotify, telegram_push, timer
 from .calculator import calculate
 from .language import LANGUAGE_NAMES
 from .mode import set_funny_voice
@@ -439,6 +439,47 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "acknowledge_reminder",
+        "description": (
+            "Mark a critical reminder (e.g. a flight, medication, or subscription "
+            "cancellation) as handled, when the user explicitly says they've taken "
+            "care of it. Stops any further nudging about it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text identifying which reminder, e.g. 'the flight' or 'antibiotics'.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "classify_uncertain_reminder",
+        "description": (
+            "Record how a previously-uncertain calendar reminder should be "
+            "categorized, after asking the user whether it's critical, morning, "
+            "or a regular reminder."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Text identifying which reminder, e.g. the title mentioned.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["critical", "morning", "regular"],
+                    "description": "Which category the user chose.",
+                },
+            },
+            "required": ["query", "category"],
+        },
+    },
 ]
 
 # Tools not listed here default to both languages.
@@ -557,18 +598,35 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
         return timer.cancel_timer()
 
     if name == "add_calendar_event":
+        title = tool_input["title"]
+        notes = tool_input.get("notes", "")
+        # Classified synchronously (Haiku, ~1s) before creation rather than
+        # after -- so the category is stamped on the event from the start
+        # instead of leaving a window where reminders.py's poller sees an
+        # unclassified item and reclassifies it independently.
+        category = classify.classify_reminder(title, notes)
         try:
-            return gcal.add_event(
-                title=tool_input["title"],
+            result = gcal.add_event(
+                title=title,
                 date=tool_input["date"],
                 times=tool_input["times"],
                 recurrence=tool_input.get("recurrence", "none"),
                 count=tool_input.get("count"),
                 until_date=tool_input.get("until_date"),
-                notes=tool_input.get("notes", ""),
+                notes=notes,
+                # Stamping "uncertain" itself (not left blank) so
+                # reminders.py's reclassification poll recognizes this one
+                # was already attempted and doesn't re-run Haiku on it or
+                # re-queue/re-push the Telegram question every cycle.
+                category=category,
             )
         except gcal.CalendarError as exc:
             return f"status: error_calendar_failed, details: {exc}"
+        if category == classify.UNCERTAIN and "event_group: " in result:
+            group_id = result.rsplit("event_group: ", 1)[1].strip()
+            classify.queue_uncertain(group_id, title)
+            telegram_push.push(classify.uncertain_question_text(title))
+        return result
 
     if name == "list_calendar_events":
         try:
@@ -581,6 +639,23 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
             return gcal.cancel_events(query=tool_input["query"])
         except gcal.CalendarError as exc:
             return f"status: error_calendar_failed, details: {exc}"
+
+    if name == "acknowledge_reminder":
+        return reminders.acknowledge_critical(tool_input["query"])
+
+    if name == "classify_uncertain_reminder":
+        pending = classify.find_pending_by_query(tool_input["query"])
+        if pending is None:
+            return "status: error_not_found"
+        category = tool_input["category"]
+        try:
+            result = gcal.set_category_for_group(pending["group_id"], category)
+        except gcal.CalendarError as exc:
+            return f"status: error_calendar_failed, details: {exc}"
+        if result.startswith("status: ok"):
+            classify.resolve(pending["group_id"])
+            return f"status: ok, title: {pending['title']}, category: {category}"
+        return result
 
     if name == "get_daily_halacha":
         episode = halacha.pick_short_halacha_episode()
