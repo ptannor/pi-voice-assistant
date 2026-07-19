@@ -336,7 +336,7 @@ then confirm the lockfile only references `pypi.org` before committing.
 ## Wake word ("Alexa" / "Mendy") + talking to Claude
 
 `wake_word_daemon.py` listens continuously for **two** wake words at once:
-**"Alexa"** and **"Mendy"** (the custom-trained "Menachem Mendel" model at
+**"Alexa"** and **"Mendy"** (the custom-trained model at
 [`models/mendy.onnx`](models/mendy.onnx)). Whichever one you say determines
 which language *every* turn of that conversation is transcribed and replied
 in — Alexa for English, Mendy for Hebrew — deterministically, instead of
@@ -768,7 +768,7 @@ uv run python -m shabbat.gate
 
 ## Roadmap (not in this milestone)
 
-- ~~Custom-trained wake word ("Menachem Mendel" / "Mendy" via
+- ~~Custom-trained wake word ("Mendy" via
   openWakeWord)~~ Done — `models/mendy.onnx` is trained and wired in as the
   default Hebrew trigger, replacing the "hey_jarvis" placeholder (which is
   now only a fallback if that file is ever missing). Evaluated against 2,000

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Wake word daemon: listens for two wake words -- "Alexa" for English,
-"Mendy" (the custom-trained "Menachem Mendel" model at models/mendy.onnx)
+"Mendy" (the custom-trained model at models/mendy.onnx)
 for Hebrew -- then records a question, sends it through Claude, and speaks
 the reply back. Which wake word triggered the conversation determines the
 first turn's language deterministically (see _load_wake_word_model);
