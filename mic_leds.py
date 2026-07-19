@@ -5,9 +5,23 @@ README's Mic LED patterns section for where to get the binary). The device's
 LED protocol only exposes 5 fixed effects (off/breath/rainbow/single-color/
 doa) plus a doa base+highlight color pair -- there's no per-pixel/custom-
 animation command, so a moving "comet" isn't possible; these patterns are
-the closest fit confirmed live against the real hardware:
+the closest fit confirmed live against the real hardware.
 
-- idle: resting look, static rainbow across the ring
+Rainbow mode's rotation is real but oddly fragile: `xvf_host` re-opens a
+fresh USB connection for every single invocation (see the "Device
+(USB)::device_init()" line it prints each time), and issuing
+led_effect/led_speed/led_brightness/led_gammify as separate invocations --
+exactly how every other effect below is applied -- left the rainbow
+completely static regardless of LED_SPEED's value. Confirmed live it only
+actually rotates when all of those commands run inside one *continuous*
+session via `xvf_host -e <command-list-file>` instead (see _run_batch) --
+reconnecting between commands seems to reset whatever's driving the
+rotation. Breath mode's own speed doesn't have this problem (LISTENING/
+THINKING/ERROR were all tuned live using ordinary separate invocations,
+same as before), so only _apply_idle_effect uses the batched path.
+
+- idle: resting look, rainbow slowly rotating around the ring (speed 8,
+  confirmed live)
 - listening: wake word just fired, actively recording the question -- blue
   base with a green highlight in the direction the sound is coming from
   (LED_DOA_COLOR reused with custom colors instead of the device default)
@@ -38,6 +52,7 @@ import platform
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -49,6 +64,7 @@ EFFECT_SOLID = 3
 EFFECT_DOA = 4
 
 IDLE_EFFECT = EFFECT_RAINBOW  # resting look
+IDLE_SPEED = 8  # confirmed live: 2 too slow, 10 too fast, 8 just right
 
 LISTENING_BASE_COLOR = 0x0033FF  # blue -- ring base while recording the question
 LISTENING_DOA_COLOR = 0x00FF00  # green -- highlight in the direction of the sound
@@ -112,7 +128,7 @@ def _binary_path() -> Path | None:
     return Path(__file__).parent / "vendor" / "xvf_host" / platform_dir / "xvf_host"
 
 
-def _run(*args: str) -> bool:
+def _require_binary() -> Path | None:
     global _warned_missing
     binary = _binary_path()
     if binary is None or not binary.exists():
@@ -124,6 +140,13 @@ def _run(*args: str) -> bool:
                 flush=True,
             )
             _warned_missing = True
+        return None
+    return binary
+
+
+def _run(*args: str) -> bool:
+    binary = _require_binary()
+    if binary is None:
         return False
     try:
         subprocess.run(
@@ -136,6 +159,38 @@ def _run(*args: str) -> bool:
     except (subprocess.SubprocessError, OSError) as exc:
         print(f"mic_leds: {' '.join(args)} failed: {exc}", file=sys.stderr, flush=True)
         return False
+
+
+def _run_batch(commands: list[str]) -> bool:
+    """Same role as _run(), but issues all `commands` (each a full "command
+    arg [arg...]" line, same names/argument formats _run() takes) within
+    one continuous USB session via xvf_host's -e/--execute-command-list,
+    instead of one subprocess invocation -- and one fresh USB
+    reconnection -- per command. See the module docstring: only this batched
+    form actually rotates rainbow mode; reconnecting between commands (what
+    every separate _run() call does) resets whatever drives that rotation.
+    """
+    binary = _require_binary()
+    if binary is None:
+        return False
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("\n".join(commands) + "\n")
+            path = f.name
+        subprocess.run(
+            [str(binary), "-e", path],
+            capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+            check=True,
+        )
+        return True
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"mic_leds: batch {commands} failed: {exc}", file=sys.stderr, flush=True)
+        return False
+    finally:
+        if path is not None:
+            Path(path).unlink(missing_ok=True)
 
 
 def _apply_solid(color: int) -> None:
@@ -165,11 +220,16 @@ def _apply_breath(color: int, speed: int) -> None:
 
 def _apply_idle_effect() -> None:
     with _led_lock:
-        _run("led_effect", str(IDLE_EFFECT))
+        _run_batch([
+            f"led_effect {IDLE_EFFECT}",
+            f"led_speed {IDLE_SPEED}",
+            f"led_brightness {BRIGHTNESS}",
+            "led_gammify 1",
+        ])
 
 
 def enter_idle() -> None:
-    """Resting state: static rainbow."""
+    """Resting state: rainbow, slowly rotating around the ring."""
     _bump_generation()
     threading.Thread(target=_apply_idle_effect, daemon=True).start()
 
