@@ -19,6 +19,7 @@ import collections
 import json
 import os
 import queue
+import signal
 import sys
 import tempfile
 import time
@@ -31,6 +32,19 @@ import numpy as np
 
 # Global state for Spotify playback status to adjust wake word threshold dynamically
 spotify_is_playing = False
+
+
+def _request_reminders_refetch() -> None:
+    # Best-effort: a signal delivered before brain.reminders is even
+    # importable (or any transient import issue) shouldn't crash the daemon
+    # over a latency nice-to-have -- see brain/reminders.py's
+    # request_refetch()/_notify_other_process().
+    try:
+        from brain import reminders
+        reminders.request_refetch()
+    except Exception:
+        pass
+
 
 def _poll_spotify_status():
     global spotify_is_playing
@@ -876,6 +890,13 @@ def _main() -> None:
 
     # Start the Spotify background poll thread to dynamically adjust wake word sensitivity
     threading.Thread(target=_poll_spotify_status, daemon=True).start()
+
+    # Lets a *different* process (e.g. telegram_bot_daemon.py, after creating
+    # a reminder there) wake this process's reminders poller immediately
+    # instead of it waiting out its own fetch interval -- see
+    # brain/reminders.py's request_refetch()/_notify_other_process(), which
+    # sends this via this process's own PIDFILE.
+    signal.signal(signal.SIGUSR1, lambda signum, frame: _request_reminders_refetch())
 
     # Start the Mendy-calendar reminder poller (see brain/reminders.py) --
     # needs out_device to speak reminders, and must run in this process since
