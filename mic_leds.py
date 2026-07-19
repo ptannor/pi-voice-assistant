@@ -202,11 +202,21 @@ def _apply_solid(color: int) -> None:
 
 
 def _apply_doa(base_color: int, doa_color: int) -> None:
+    # Batched (see _run_batch), not four separate _run() calls like the
+    # other apply_* functions -- confirmed live that entering listening
+    # right out of idle's now-continuously-rotating rainbow (see
+    # _apply_idle_effect) produced a visible blink: each separate call
+    # reconnects over USB, so a brief window with led_effect already at DOA
+    # but led_doa_color not yet applied (default/stale color) was visible
+    # mid-transition. One continuous session applies the whole state at
+    # once instead.
     with _led_lock:
-        _run("led_effect", str(EFFECT_DOA))
-        _run("led_doa_color", f"0x{base_color:06x}", f"0x{doa_color:06x}")
-        _run("led_brightness", str(BRIGHTNESS))
-        _run("led_gammify", "1")
+        _run_batch([
+            f"led_effect {EFFECT_DOA}",
+            f"led_doa_color 0x{base_color:06x} 0x{doa_color:06x}",
+            f"led_brightness {BRIGHTNESS}",
+            "led_gammify 1",
+        ])
 
 
 def _apply_breath(color: int, speed: int) -> None:
