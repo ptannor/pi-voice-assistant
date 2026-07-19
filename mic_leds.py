@@ -64,6 +64,17 @@ _PLATFORM_DIRS = {
 _generation_lock = threading.Lock()
 _generation = 0
 _warned_missing = False
+# Every enter_* function below fires its LED sequence on its own throwaway
+# background thread (fire-and-forget -- see module docstring), with no
+# synchronization between them. Two of those threads hitting the physical
+# USB device at the same moment (e.g. a wake-word interrupt re-triggering
+# enter_listening() while the previous state's own sequence is still
+# mid-flight) previously raced on the same USB handle -- confirmed live as
+# an intermittent "led_gammify 1 failed: ... exit status 8" from xvf_host,
+# not any real hardware/driver problem. This lock serializes each apply_*
+# sequence as one atomic unit (same reasoning as audio_check/player.py's
+# own _playback_lock for the analogous output-stream contention).
+_led_lock = threading.Lock()
 
 
 def _bump_generation() -> int:
@@ -110,31 +121,39 @@ def _run(*args: str) -> bool:
 
 
 def _apply_solid(color: int) -> None:
-    _run("led_effect", str(EFFECT_SOLID))
-    _run("led_color", f"0x{color:06x}")
-    _run("led_brightness", str(BRIGHTNESS))
-    _run("led_gammify", "1")  # gamma-correct so the color reads as vivid, not washed out
+    with _led_lock:
+        _run("led_effect", str(EFFECT_SOLID))
+        _run("led_color", f"0x{color:06x}")
+        _run("led_brightness", str(BRIGHTNESS))
+        _run("led_gammify", "1")  # gamma-correct so the color reads as vivid, not washed out
 
 
 def _apply_doa(base_color: int, doa_color: int) -> None:
-    _run("led_effect", str(EFFECT_DOA))
-    _run("led_doa_color", f"0x{base_color:06x}", f"0x{doa_color:06x}")
-    _run("led_brightness", str(BRIGHTNESS))
-    _run("led_gammify", "1")
+    with _led_lock:
+        _run("led_effect", str(EFFECT_DOA))
+        _run("led_doa_color", f"0x{base_color:06x}", f"0x{doa_color:06x}")
+        _run("led_brightness", str(BRIGHTNESS))
+        _run("led_gammify", "1")
 
 
 def _apply_breath(color: int, speed: int) -> None:
-    _run("led_effect", str(EFFECT_BREATH))
-    _run("led_color", f"0x{color:06x}")
-    _run("led_speed", str(speed))
-    _run("led_brightness", str(BRIGHTNESS))
-    _run("led_gammify", "1")
+    with _led_lock:
+        _run("led_effect", str(EFFECT_BREATH))
+        _run("led_color", f"0x{color:06x}")
+        _run("led_speed", str(speed))
+        _run("led_brightness", str(BRIGHTNESS))
+        _run("led_gammify", "1")
+
+
+def _apply_idle_effect() -> None:
+    with _led_lock:
+        _run("led_effect", str(IDLE_EFFECT))
 
 
 def enter_idle() -> None:
     """Resting state: static rainbow."""
     _bump_generation()
-    threading.Thread(target=lambda: _run("led_effect", str(IDLE_EFFECT)), daemon=True).start()
+    threading.Thread(target=_apply_idle_effect, daemon=True).start()
 
 
 def enter_listening() -> None:
@@ -184,6 +203,6 @@ def enter_idle_transition() -> None:
         with _generation_lock:
             current = _generation
         if gen == current:
-            _run("led_effect", str(IDLE_EFFECT))
+            _apply_idle_effect()
 
     threading.Thread(target=run, daemon=True).start()
