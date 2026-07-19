@@ -7,21 +7,44 @@ from audio_check.player import play_wav
 from . import spotify
 from .audio_focus import Channel, manager as focus
 from .config import TIMER_SOUND_PATH
+from .respond import speak_reply
 
 
 _active_timer_thread = None
 _stop_event = threading.Event()
 
 
-def set_timer(duration_seconds: int, out_device=None) -> str:
-    """Starts a background thread that sleeps for `duration_seconds` and then
-    loops TIMER_SOUND_PATH (see brain/config.py) until cancelled -- one sound
-    for every timer regardless of duration, replacing the old Piano
-    Man/Hedwig's Theme Spotify tracks by household request. `out_device` is
-    the audio_check.devices.Device to play on; if it's None (e.g. a caller
-    with no speaker, like the Telegram bot) the timer still runs but ends
-    silently, same tolerance the rest of this codebase gives a missing
-    audio cue.
+def _default_label(duration_seconds: int, language: str) -> str:
+    """A complete, natural phrase for a timer with no specific purpose given
+    -- e.g. "15 minute timer" / "טיימר ל-15 דקות" -- so it always announces
+    something concrete ("your 15 minute timer is done") rather than a bare
+    "your timer is done" that doesn't distinguish which one, if more than
+    one had been set today."""
+    minutes = duration_seconds / 60
+    if minutes >= 1:
+        amount = int(minutes) if minutes == int(minutes) else round(minutes, 1)
+        return f"טיימר ל-{amount} דקות" if language == "he" else f"{amount} minute timer"
+    return f"טיימר ל-{duration_seconds} שניות" if language == "he" else f"{duration_seconds} second timer"
+
+
+def _announcement(label: str, language: str) -> str:
+    return f"{label} הסתיים" if language == "he" else f"Your {label} is done."
+
+
+def set_timer(duration_seconds: int, out_device=None, label: str | None = None, language: str = "he") -> str:
+    """Starts a background thread that sleeps for `duration_seconds`, speaks
+    an announcement once (see _announcement/_default_label -- confirmed a
+    real gap: a bare looping sound with no accompanying text gave no way to
+    tell which timer finished, or that it was a timer at all rather than a
+    reminder/alarm), then loops TIMER_SOUND_PATH (see brain/config.py) until
+    cancelled -- one sound for every timer regardless of duration, replacing
+    the old Piano Man/Hedwig's Theme Spotify tracks by household request.
+    `out_device` is the audio_check.devices.Device to play on; if it's None
+    (e.g. a caller with no speaker, like the Telegram bot) the timer still
+    runs but ends silently, same tolerance the rest of this codebase gives a
+    missing audio cue. `label`, if given, should already be a complete,
+    natural phrase for what the timer is for (see the set_timer tool
+    schemas in brain/tools.py); otherwise a duration-based default is used.
     """
     global _active_timer_thread, _stop_event
 
@@ -29,6 +52,7 @@ def set_timer(duration_seconds: int, out_device=None) -> str:
     cancel_timer()
 
     _stop_event.clear()
+    label = label or _default_label(duration_seconds, language)
 
     def timer_target():
         # Sleep in small 1-second steps so we can cancel it quickly if requested
@@ -45,10 +69,16 @@ def set_timer(duration_seconds: int, out_device=None) -> str:
         # and preempts an in-progress spoken reply, before the alarm sound
         # starts.
         focus.acquire(Channel.ALERT)
-        if out_device is None or not TIMER_SOUND_PATH:
-            print("Timer finished! (no output device or TIMER_SOUND_PATH configured -- silent)", flush=True)
+        if out_device is None:
+            print(f"Timer finished! ({label}, no output device -- silent)", flush=True)
             return
-        print("Timer finished! Looping timer sound until cancelled.", flush=True)
+        print(f"Timer finished! Announcing '{label}' then looping timer sound until cancelled.", flush=True)
+        try:
+            speak_reply(_announcement(label, language), out_device)
+        except Exception as e:
+            print(f"Failed to speak timer announcement: {e}", flush=True)
+        if not TIMER_SOUND_PATH:
+            return
         while not _stop_event.is_set():
             try:
                 play_wav(Path(TIMER_SOUND_PATH), out_device)

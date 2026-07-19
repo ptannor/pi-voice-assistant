@@ -36,7 +36,16 @@ TOOLS = [
                 "duration_seconds": {
                     "type": "integer",
                     "description": "How long the timer should run, in seconds.",
-                }
+                },
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "A short, complete, natural Hebrew phrase for what this timer is for, "
+                        "already including the word 'טיימר', e.g. 'טיימר לעוף' if the user mentioned "
+                        "cooking chicken. Omit entirely if nothing specific was mentioned -- a "
+                        "duration-based default ('טיימר ל-15 דקות') is used automatically."
+                    ),
+                },
             },
             "required": ["duration_seconds"],
         },
@@ -55,7 +64,16 @@ TOOLS = [
                 "duration_seconds": {
                     "type": "integer",
                     "description": "How long the timer should run, in seconds.",
-                }
+                },
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "A short, complete, natural phrase for what this timer is for, already "
+                        "including the word 'timer', e.g. 'chicken timer' if the user mentioned "
+                        "cooking chicken. Omit entirely if nothing specific was mentioned -- a "
+                        "duration-based default ('15 minute timer') is used automatically."
+                    ),
+                },
             },
             "required": ["duration_seconds"],
         },
@@ -712,7 +730,7 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
         return spotify.current_track_info()
 
     if name in ("set_timer_hebrew", "set_timer_english"):
-        return timer.set_timer(tool_input["duration_seconds"], out_device)
+        return timer.set_timer(tool_input["duration_seconds"], out_device, label=tool_input.get("label"), language=language)
 
     if name in ("cancel_timer_hebrew", "cancel_timer_english"):
         return timer.cancel_timer()
