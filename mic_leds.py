@@ -18,8 +18,14 @@ the closest fit confirmed live against the real hardware:
 - idle transition: a brief white flash when a conversation ends, then back
   to the idle rainbow
 - error: something is stopping the assistant from working (no wifi, a
-  failed API call, no mic/speaker found) -- solid orange, held rather than
-  timed out, since the underlying problem may still be there
+  failed API call, no mic/speaker found) -- orange breathing pulse, held
+  rather than timed out, since the underlying problem may still be there.
+  If it was actually a network outage, a background watch (see
+  _start_recovery_watch) clears it on its own once connectivity is back,
+  rather than requiring some unrelated fresh interaction (a wake word) to
+  do that as a side effect -- confirmed live: wifi recovered on its own
+  well before anyone next spoke to it, and the light just stayed orange
+  the whole time regardless.
 
 All calls are fire-and-forget (background thread, short subprocess timeout)
 so a missing/disconnected array never blocks or crashes the voice pipeline --
@@ -29,6 +35,7 @@ from __future__ import annotations
 
 import os
 import platform
+import socket
 import subprocess
 import sys
 import threading
@@ -53,6 +60,17 @@ TRANSITION_SECONDS = 0.5  # how long the flash holds before settling back to idl
 ERROR_COLOR = 0xFF8800  # orange -- reserved for wifi/API/hardware trouble
 BRIGHTNESS = 255
 _SUBPROCESS_TIMEOUT = 2.0
+# How often enter_error()'s recovery watch retries a connectivity check --
+# frequent enough to clear the light soon after wifi actually comes back,
+# cheap enough (one fast TCP connect attempt) to poll indefinitely for as
+# long as an error happens to persist.
+_RECOVERY_CHECK_SECONDS = 15.0
+# 8.8.8.8:53 (Google public DNS) -- picked only for being a well-known,
+# highly-available anycast IP that answers a bare TCP connect fast; this
+# isn't a DNS lookup or a real request to Google, just "can this machine
+# reach anything on the internet at all," which needs no host/site of its
+# own to stay up.
+_CONNECTIVITY_CHECK_HOST = ("8.8.8.8", 53)
 
 _PLATFORM_DIRS = {
     ("Darwin", "arm64"): "mac_arm64",
@@ -185,12 +203,56 @@ def enter_error() -> None:
     problem (no wifi, a failed API call, missing hardware) may still be
     there. A static solid color reads as "off/stuck" rather than "still
     going, something's wrong" -- breathing matches how the rest of this
-    module signals "the assistant is still alive" while working. Whatever
-    next calls one of the other `enter_*` functions clears it."""
-    _bump_generation()
+    module signals "the assistant is still alive" while working. Cleared
+    either by whatever next calls one of the other `enter_*` functions (a
+    fresh wake word, most commonly), or on its own once network
+    connectivity is confirmed back (see _start_recovery_watch) -- most
+    real errors here trace back to a dropped connection, and that shouldn't
+    need someone to notice and speak to it just to turn the light off."""
+    gen = _bump_generation()
     threading.Thread(
         target=lambda: _apply_breath(ERROR_COLOR, THINKING_SPEED), daemon=True
     ).start()
+    _start_recovery_watch(gen)
+
+
+def _network_reachable() -> bool:
+    try:
+        socket.create_connection(_CONNECTIVITY_CHECK_HOST, timeout=2.0).close()
+        return True
+    except OSError:
+        return False
+
+
+def _start_recovery_watch(gen: int) -> None:
+    """Started fresh from every enter_error() call (not one persistent
+    background thread) -- polls for connectivity and, once it's back, clears
+    the error state on its own. Guarded by the same generation token every
+    other enter_* transition uses: if something else (a fresh wake word, a
+    newer error) has since changed the state, `gen` is stale by the time
+    this notices the network is back, and it exits without touching
+    anything instead of clobbering whatever's actually current.
+
+    Not gated on the error actually being network-related -- there's no way
+    to tell that from here, and there doesn't need to be: if the real cause
+    was something else, the light going back to idle a little early just
+    means the next real failure lights it up again, same as always.
+    """
+
+    def watch() -> None:
+        while True:
+            time.sleep(_RECOVERY_CHECK_SECONDS)
+            with _generation_lock:
+                if _generation != gen:
+                    return
+            if _network_reachable():
+                with _generation_lock:
+                    if _generation != gen:
+                        return
+                enter_idle()
+                return
+
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def enter_idle_transition() -> None:
