@@ -107,6 +107,17 @@ MIN_SPEECH_RUN_SECONDS = 0.3
 # moment someone just finished talking to the device than mid-pause during
 # an ongoing turn, so it can afford to be more sensitive.
 MIN_SPEECH_ONSET_SECONDS = 0.2
+# How much continuous quiet is tolerated *within* a not-yet-confirmed speech
+# attempt before giving up on it and discarding pending_speech_buffer
+# entirely. Without this, even a single ~100ms quiet chunk between two
+# words -- a completely normal micro-pause, e.g. "מה" ... "העניינים" --
+# wiped out everything buffered so far the instant it occurred, silently
+# dropping the earlier word the moment a *later* word's own loud run
+# confirmed onset instead (the earlier word was never part of that later
+# run, so it never got flushed). Confirmed live and via simulation: a short
+# leading word + a single-chunk gap + a longer word retained only the
+# second word.
+PENDING_GAP_TOLERANCE_SECONDS = 0.4
 
 # macOS CoreAudio's AUHAL backend occasionally fails to start a stream with
 # "Internal PortAudio error" (-9986) -- confirmed live, right after a dense
@@ -220,6 +231,9 @@ def record_until_silence(
     # clipped the first word of nearly every utterance, in both languages
     # ("מה" from "מה המזג אוויר מחר", "what's" from "what's the weather").
     pending_speech_buffer: list[np.ndarray] = []
+    # Consecutive quiet chunks seen since the last loud chunk, while still
+    # unconfirmed as real speech -- see PENDING_GAP_TOLERANCE_SECONDS.
+    pending_quiet_chunks = 0
     speech_started = False
     silence_elapsed = 0.0
     elapsed = 0.0
@@ -228,6 +242,7 @@ def record_until_silence(
     consecutive_loud_chunks = 0
     min_speech_run_chunks = max(1, round(MIN_SPEECH_RUN_SECONDS / chunk_duration))
     min_onset_chunks = max(1, round(MIN_SPEECH_ONSET_SECONDS / chunk_duration))
+    max_pending_quiet_chunks = max(1, round(PENDING_GAP_TOLERANCE_SECONDS / chunk_duration))
 
     # Preroll is audio already captured before this stream even existed, so
     # it's processed before opening one -- doesn't compete with max_seconds/
@@ -256,13 +271,18 @@ def record_until_silence(
             chunks.append(chunk)
             continue
 
+        pending_speech_buffer.append(chunk)
         if is_loud:
-            pending_speech_buffer.append(chunk)
+            pending_quiet_chunks = 0
         else:
-            pending_speech_buffer = []
+            pending_quiet_chunks += 1
+            if pending_quiet_chunks > max_pending_quiet_chunks:
+                pending_speech_buffer = []
+                pending_quiet_chunks = 0
         if consecutive_loud_chunks >= min_onset_chunks:
             chunks.extend(pending_speech_buffer)
             pending_speech_buffer = []
+            pending_quiet_chunks = 0
             speech_started = True
 
     stream = _open_input_stream(device, channels, sample_rate, callback)
@@ -309,11 +329,21 @@ def record_until_silence(
                 # chunks (discarding it if the streak breaks before reaching
                 # the threshold, same noise-rejection as before) instead of
                 # dropping it outright, so it can be recovered once the run
-                # is actually confirmed.
+                # is actually confirmed. Tolerates up to
+                # PENDING_GAP_TOLERANCE_SECONDS of quiet within this pending
+                # attempt (a normal micro-pause between two words, e.g. "מה"
+                # ... "העניינים") before giving up on it -- without this, a
+                # single quiet chunk between words wiped the earlier word
+                # entirely the instant a later word's own loud run confirmed
+                # onset instead.
+                pending_speech_buffer.append(chunk)
                 if is_loud:
-                    pending_speech_buffer.append(chunk)
+                    pending_quiet_chunks = 0
                 else:
-                    pending_speech_buffer = []
+                    pending_quiet_chunks += 1
+                    if pending_quiet_chunks > max_pending_quiet_chunks:
+                        pending_speech_buffer = []
+                        pending_quiet_chunks = 0
 
                 if consecutive_loud_chunks >= min_onset_chunks:
                     if lead_in_buffer:
@@ -321,6 +351,7 @@ def record_until_silence(
                         lead_in_buffer = []
                     chunks.extend(pending_speech_buffer)
                     pending_speech_buffer = []
+                    pending_quiet_chunks = 0
                     speech_started = True
                 elif elapsed >= initial_timeout:
                     return None
