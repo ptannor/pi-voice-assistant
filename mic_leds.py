@@ -7,7 +7,7 @@ doa) plus a doa base+highlight color pair -- there's no per-pixel/custom-
 animation command, so a moving "comet" isn't possible; these patterns are
 the closest fit confirmed live against the real hardware:
 
-- idle: resting look, static rainbow across the ring
+- idle: resting look, rainbow slowly rotating around the ring
 - listening: wake word just fired, actively recording the question -- blue
   base with a green highlight in the direction the sound is coming from
   (LED_DOA_COLOR reused with custom colors instead of the device default)
@@ -49,6 +49,16 @@ EFFECT_SOLID = 3
 EFFECT_DOA = 4
 
 IDLE_EFFECT = EFFECT_RAINBOW  # resting look
+# LED_SPEED applies to both breath *and* rainbow mode (per xvf_host's own
+# command list) -- idle never used to set it at all, so the rainbow just
+# inherited whatever speed the last non-idle effect left behind (e.g.
+# THINKING_SPEED) instead of animating on its own. Confirmed a real
+# regression: this used to visibly rotate slowly around the ring, and
+# without an explicit speed here it reads as static instead. 1 is a first
+# guess at "slow" (the lowest breath speed was already confirmed too slow
+# *for breathing* -- rainbow rotation may read differently) -- tune live
+# against the real hardware if it's not slow enough, or too slow.
+IDLE_SPEED = 1
 
 LISTENING_BASE_COLOR = 0x0033FF  # blue -- ring base while recording the question
 LISTENING_DOA_COLOR = 0x00FF00  # green -- highlight in the direction of the sound
@@ -166,10 +176,11 @@ def _apply_breath(color: int, speed: int) -> None:
 def _apply_idle_effect() -> None:
     with _led_lock:
         _run("led_effect", str(IDLE_EFFECT))
+        _run("led_speed", str(IDLE_SPEED))
 
 
 def enter_idle() -> None:
-    """Resting state: static rainbow."""
+    """Resting state: rainbow, slowly rotating around the ring."""
     _bump_generation()
     threading.Thread(target=_apply_idle_effect, daemon=True).start()
 
