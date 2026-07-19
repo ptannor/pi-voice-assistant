@@ -806,12 +806,18 @@ def _handle_conversation(
                 break  # "stop" means stop listening too, not just go quiet
 
             # Keep listening when Claude's own reply is a genuine question, or
-            # when a music tool just ran (see MUSIC_FOLLOW_UP_TOOL_KEYWORDS) --
-            # those replies are deliberately silent on success, but a household
-            # member mid-conversation about music is very likely to immediately
-            # follow up (change the song again, stop it, ask what's playing)
-            # without saying the wake word again.
-            music_follow_up_likely = any(
+            # when a music tool ran AND the reply was silent (see
+            # MUSIC_FOLLOW_UP_TOOL_KEYWORDS) -- those replies are deliberately
+            # silent on success, but a household member mid-conversation about
+            # music is very likely to immediately follow up (change the song
+            # again, stop it, ask what's playing) without saying the wake
+            # word again. Confirmed a real gap: this used to trigger on *any*
+            # turn where a music tool ran, even one where Claude gave a full,
+            # substantive spoken answer (e.g. identifying a song by name,
+            # closed-ended, no question) -- that kept the conversation open
+            # waiting for a follow-up that was never coming, same as it
+            # would for any other fully-answered closed-ended question.
+            music_follow_up_likely = not reply.strip() and any(
                 stage.startswith("tool:") and any(kw in stage for kw in MUSIC_FOLLOW_UP_TOOL_KEYWORDS)
                 for stage, _ in ask_timeline
             )
