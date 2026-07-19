@@ -72,14 +72,32 @@ def set_timer(duration_seconds: int, out_device=None, label: str | None = None, 
         if out_device is None:
             print(f"Timer finished! ({label}, no output device -- silent)", flush=True)
             return
-        print(f"Timer finished! Announcing '{label}' then looping timer sound until cancelled.", flush=True)
-        try:
-            speak_reply(_announcement(label, language), out_device)
-        except Exception as e:
-            print(f"Failed to speak timer announcement: {e}", flush=True)
+
+        announcement = _announcement(label, language)
+
+        def speak_announcement() -> bool:
+            try:
+                speak_reply(announcement, out_device)
+                return True
+            except Exception as e:
+                print(f"Failed to speak timer announcement: {e}", flush=True)
+                return False
+
         if not TIMER_SOUND_PATH:
+            speak_announcement()
             return
+
+        # Repeats the announcement every loop, not just once up front --
+        # confirmed a real gap: a bare looping tone gives no reminder of
+        # *which* timer this is (or that it's a timer at all) to anyone who
+        # didn't hear the very first announcement, e.g. walking into the
+        # room partway through.
+        print(f"Timer finished! Looping '{label}' announcement + timer sound until cancelled.", flush=True)
         while not _stop_event.is_set():
+            if not speak_announcement():
+                break
+            if _stop_event.is_set():
+                break
             try:
                 play_wav(Path(TIMER_SOUND_PATH), out_device)
             except Exception as e:

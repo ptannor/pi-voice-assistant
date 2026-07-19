@@ -230,13 +230,20 @@ def _ring_until_dismissed(text: str, category: str | None, title: str, out_devic
     focus.acquire(Channel.ALERT)
 
     def loop() -> None:
-        try:
-            speak_reply(text, out_device)
-        except Exception as exc:
-            print(f"Failed to speak wakeup reminder: {exc}", flush=True)
-        print("Wakeup reminder ringing until dismissed.", flush=True)
         sound = _sound_for(category, title)
+        # Repeats the reminder text every loop, not just once up front --
+        # same reasoning as brain/timer.py's own ring loop: a bare looping
+        # tone gives no reminder of *what* this alarm is about to anyone who
+        # didn't hear the very first announcement.
+        print("Wakeup reminder ringing until dismissed.", flush=True)
         while not _alarm_stop_event.is_set():
+            try:
+                speak_reply(text, out_device)
+            except Exception as exc:
+                print(f"Failed to speak wakeup reminder: {exc}", flush=True)
+                break
+            if _alarm_stop_event.is_set():
+                break
             try:
                 play_wav(sound, out_device)
             except Exception as exc:

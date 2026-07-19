@@ -9,14 +9,17 @@ Two ways to deliver it, tried in this order:
    plays one via brain/spotify.py's existing play() infrastructure --
    reusing the exact same Spotify plumbing the music-playback tools already
    use, not a new audio pipeline. Much better listening experience than TTS
-   reading composed text aloud. Tracks which episode ids have already been
-   played (logs/ file, mirrors
-   shabbat/gate.py's fired-id state pattern) so the same clip doesn't repeat
-   while there's still a fresh one available -- once the visible pool is
-   exhausted, repeats are allowed rather than failing (real recordings are
-   worth more than a repeat, and worth much more than a TTS-read one -- see
-   _MAX_AUDIO_SECONDS below for why the pool is sized to make repeats rare
-   in the first place rather than leaning on this fallback).
+   reading composed text aloud. Tracks a *play count* per episode id (logs/
+   file, mirrors shabbat/gate.py's fired-id state pattern) rather than a
+   bare played/not-played flag, and always prefers whichever count-tier is
+   lowest among that call's sampled candidates -- every episode not yet
+   seen at all is implicitly count 0, which stays preferred for as long as
+   any genuinely fresh one is still findable, so no episode is ever picked
+   a 2nd time while another sampled candidate hasn't had its 1st; once the
+   whole pool available on a given call has cycled at least once, the same
+   preference (lowest count first) keeps repeats spread evenly too, instead
+   of one clip drifting ahead of the rest. See _MAX_AUDIO_SECONDS below for
+   why the pool is sized to make repeats rare in the first place.
 2. **TTS-composed fallback** (get_daily_halacha_text) -- only reached if no
    suitable recording turns up at all (Spotify not configured, network
    hiccup, nothing short enough found). Sourced via a real web search each
@@ -113,36 +116,49 @@ def _today_str() -> str:
     return datetime.now(ZoneInfo(HOUSEHOLD_TIMEZONE)).strftime("%Y-%m-%d")
 
 
-def _load_played() -> set[str]:
+def _load_counts() -> dict[str, int]:
     if not _PLAYED_STATE_PATH.exists():
-        return set()
+        return {}
     try:
-        return set(json.loads(_PLAYED_STATE_PATH.read_text()).get("played", []))
-    except (json.JSONDecodeError, OSError):
-        return set()
+        raw = json.loads(_PLAYED_STATE_PATH.read_text())
+        if "counts" in raw:
+            return {k: int(v) for k, v in raw["counts"].items()}
+        # Back-compat: the older state file format was just a flat
+        # "played" list (each entry implicitly played once) -- migrate that
+        # history into counts instead of silently discarding it and
+        # re-treating everything as brand new.
+        return {episode_id: 1 for episode_id in raw.get("played", [])}
+    except (json.JSONDecodeError, OSError, ValueError):
+        return {}
 
 
-def _save_played(played: set[str]) -> None:
+def _save_counts(counts: dict[str, int]) -> None:
     try:
         _PLAYED_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _PLAYED_STATE_PATH.write_text(json.dumps({"played": sorted(played)}))
+        _PLAYED_STATE_PATH.write_text(json.dumps({"counts": counts}, sort_keys=True))
     except OSError:
         pass  # best-effort -- worst case a clip repeats sooner than ideal
 
 
 def pick_short_halacha_episode() -> dict | None:
     """Sample a random page from one of _HALACHA_SHOW_IDS's real back-catalogs
-    and return {"uri", "name", "duration_s"} for the caller to play via
-    brain/spotify.py's play() -- or None if nothing suitable turns up at all
-    (caller falls back to get_daily_halacha_text).
+    and return {"uri", "name", "duration_s", "play_count"} for the caller to
+    play via brain/spotify.py's play() -- or None if nothing suitable turns
+    up at all (caller falls back to get_daily_halacha_text).
 
     Shows are tried in random order; each is asked for one randomly-offset
     page of its own episode list (not a keyword search -- see
     _HALACHA_SHOW_IDS's comment for why that surfaces far more real
     candidates). Stops at the first show whose sampled page has something
-    not already played, so this is normally one Spotify round-trip (a show
-    lookup for its episode count, plus one page fetch), not a scan of every
-    show's entire catalog.
+    never played at all (count 0), so this is normally one Spotify
+    round-trip (a show lookup for its episode count, plus one page fetch) --
+    but keeps sampling the other (there are only a few) known shows if it
+    doesn't, specifically to avoid settling for a repeat when a genuinely
+    fresh episode might still be one page away. Whatever ends up in
+    `candidates` after that, the choice is always made from whichever count
+    tier is lowest among them, so an episode already played twice is never
+    picked while one played once (or never) is right there in the same
+    sample -- see _load_counts/_save_counts and the module docstring.
     """
     from . import spotify
 
@@ -151,7 +167,7 @@ def pick_short_halacha_episode() -> dict | None:
     except spotify.SpotifyError:
         return None
 
-    played = _load_played()
+    counts = _load_counts()
     show_ids = list(_HALACHA_SHOW_IDS)
     random.shuffle(show_ids)
 
@@ -181,25 +197,26 @@ def pick_short_halacha_episode() -> dict | None:
                 continue
             candidates[item["id"]] = item
 
-        if any(k not in played for k in candidates):
-            break  # this page already has something fresh -- no need to sample another show
+        if any(counts.get(k, 0) == 0 for k in candidates):
+            break  # found something never played at all -- no need to sample another show
 
     if not candidates:
         return None
 
-    fresh = {k: v for k, v in candidates.items() if k not in played}
-    pool = fresh or candidates  # every sampled page happened to be fully played -- allow a repeat rather than nothing
+    min_count = min(counts.get(episode_id, 0) for episode_id in candidates)
+    pool = {k: v for k, v in candidates.items() if counts.get(k, 0) == min_count}
 
     chosen_id = random.choice(list(pool.keys()))
     chosen = pool[chosen_id]
 
-    played.add(chosen_id)
-    _save_played(played)
+    counts[chosen_id] = counts.get(chosen_id, 0) + 1
+    _save_counts(counts)
 
     return {
         "uri": chosen["uri"],
         "name": chosen["name"],
         "duration_s": round(chosen["duration_ms"] / 1000),
+        "play_count": counts[chosen_id],
     }
 
 
