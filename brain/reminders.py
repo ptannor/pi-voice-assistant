@@ -114,18 +114,22 @@ def _is_hebrew(text: str) -> bool:
     return any("֐" <= c <= "׾" for c in text)
 
 
+def _is_wakeup(category: str | None, title: str) -> bool:
+    """WAKEUP_TITLE_KEYWORD is kept as a manual fallback alongside the
+    "morning" category (not replaced by it) so a title-based override still
+    works even before the reclassification poll or for a household that
+    never uses the classifier's morning category by that exact name."""
+    return category == "morning" or bool(WAKEUP_TITLE_KEYWORD and WAKEUP_TITLE_KEYWORD.lower() in title.lower())
+
+
 def _sound_for(category: str | None, title: str) -> Path:
     """Which sound to play before speaking a reminder titled `title` in
     category `category` (critical/morning/regular/uncertain/None -- see
-    brain/gcal.py's category_of). WAKEUP_TITLE_KEYWORD is kept as a manual
-    fallback alongside the "morning" category (not replaced by it) so a
-    title-based override still works even before the reclassification poll
-    or for a household that never uses the classifier's morning category by
-    that exact name. Falls back to the generic chime if the relevant path
-    isn't configured (see brain/config.py, local_sounds/ isn't populated in
-    a fresh clone).
+    brain/gcal.py's category_of). Falls back to the generic chime if the
+    relevant path isn't configured (see brain/config.py, local_sounds/ isn't
+    populated in a fresh clone).
     """
-    if category == "morning" or (WAKEUP_TITLE_KEYWORD and WAKEUP_TITLE_KEYWORD.lower() in title.lower()):
+    if _is_wakeup(category, title):
         return Path(WAKEUP_SOUND_PATH) if WAKEUP_SOUND_PATH else CHIME_WAV
     if category == "critical":
         return Path(CRITICAL_REMINDER_SOUND_PATH) if CRITICAL_REMINDER_SOUND_PATH else CHIME_WAV
@@ -137,11 +141,65 @@ def _speak(text: str, category: str | None, title: str, out_device: Device) -> N
     try:
         try:
             play_wav(_sound_for(category, title), out_device)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Confirmed a real gap: this used to swallow the exception
+            # completely silently, so a broken/contended output device
+            # (e.g. a PortAudio hiccup) meant the sound cue just never
+            # played, with nothing in the logs to show it even tried.
+            print(f"Reminder sound cue failed to play: {exc}", flush=True)
         speak_reply(text, out_device)
     finally:
         focus.release(Channel.ALERT)
+
+
+# -- Ringing wakeup alarm -----------------------------------------------------
+# A "morning"/wakeup-category reminder (see _is_wakeup) is meant to actually
+# wake someone up, not just announce itself once and move on like a regular
+# reminder -- _speak() above plays its sound cue exactly once, which is fine
+# for "take your medication" but not for an alarm clock. Mirrors
+# brain/timer.py's own ring-until-cancelled alarm (_active_timer_thread/
+# _stop_event/dismiss_ringing_alarm) almost exactly, including reusing the
+# same Channel.ALERT so waking up on it (a fresh wake word) dismisses it via
+# the same brain/audio_focus.py path -- see dismiss_ringing_reminder below
+# and its call site in AudioFocusManager._dismiss_ringing_alarm.
+_active_alarm_thread: threading.Thread | None = None
+_alarm_stop_event = threading.Event()
+
+
+def _ring_until_dismissed(text: str, category: str | None, title: str, out_device: Device) -> None:
+    global _active_alarm_thread
+    _alarm_stop_event.clear()
+    focus.acquire(Channel.ALERT)
+
+    def loop() -> None:
+        try:
+            speak_reply(text, out_device)
+        except Exception as exc:
+            print(f"Failed to speak wakeup reminder: {exc}", flush=True)
+        print("Wakeup reminder ringing until dismissed.", flush=True)
+        sound = _sound_for(category, title)
+        while not _alarm_stop_event.is_set():
+            try:
+                play_wav(sound, out_device)
+            except Exception as exc:
+                print(f"Failed to play wakeup reminder sound: {exc}", flush=True)
+                break
+
+    _active_alarm_thread = threading.Thread(target=loop, daemon=True)
+    _active_alarm_thread.start()
+
+
+def dismiss_ringing_reminder() -> bool:
+    """Stops a ringing wakeup reminder's looping sound immediately, same
+    shape as brain/timer.py's dismiss_ringing_alarm() -- doesn't release
+    Channel.ALERT itself, since the caller (AudioFocusManager.acquire, on a
+    fresh wake word) already does that as a separate step."""
+    global _active_alarm_thread
+    if _active_alarm_thread and _active_alarm_thread.is_alive():
+        _alarm_stop_event.set()
+        _active_alarm_thread.join(timeout=2.0)
+        return True
+    return False
 
 
 # -- Critical-reminder pending state -----------------------------------------
@@ -345,6 +403,12 @@ def _fire(item: dict, out_device: Device) -> None:
             _speak(text, category, title, out_device)
         except Exception as exc:
             print(f"Failed to speak critical reminder: {exc}", flush=True)
+        push_telegram(text)
+        return
+
+    if _is_wakeup(category, title):
+        print(f"Wakeup reminder firing: {title}", flush=True)
+        _ring_until_dismissed(text, category, title, out_device)
         push_telegram(text)
         return
 

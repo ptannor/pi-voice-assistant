@@ -179,12 +179,18 @@ def enter_speaking() -> None:
 
 
 def enter_error() -> None:
-    """Something is stopping the assistant from working -- held solid orange
-    rather than timing back out to idle, since the underlying problem (no
-    wifi, a failed API call, missing hardware) may still be there. Whatever
+    """Something is stopping the assistant from working -- orange breathing
+    pulse (same pattern/speed as `enter_thinking`, just orange instead of
+    white) held rather than timing back out to idle, since the underlying
+    problem (no wifi, a failed API call, missing hardware) may still be
+    there. A static solid color reads as "off/stuck" rather than "still
+    going, something's wrong" -- breathing matches how the rest of this
+    module signals "the assistant is still alive" while working. Whatever
     next calls one of the other `enter_*` functions clears it."""
     _bump_generation()
-    threading.Thread(target=lambda: _apply_solid(ERROR_COLOR), daemon=True).start()
+    threading.Thread(
+        target=lambda: _apply_breath(ERROR_COLOR, THINKING_SPEED), daemon=True
+    ).start()
 
 
 def enter_idle_transition() -> None:

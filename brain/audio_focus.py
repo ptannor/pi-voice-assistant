@@ -62,6 +62,11 @@ class AudioFocusManager:
         # Per-DIALOG-session flags.
         self._dialog_preempted = False
         self._dialog_opened_on_alert = False
+        # The DIALOG-acquire Spotify work (see _dialog_background_work) runs
+        # in this thread instead of inline -- release() joins it before
+        # reading the _content_* fields it sets, so there's no race, but
+        # nothing else waits on it.
+        self._dialog_bg_thread: threading.Thread | None = None
 
     def is_active(self, channel: Channel) -> bool:
         with self._lock:
@@ -90,7 +95,6 @@ class AudioFocusManager:
             if channel == Channel.DIALOG:
                 self._dialog_preempted = False
                 self._dialog_opened_on_alert = False
-                self._background_content_locked()
                 if Channel.ALERT in self._active:
                     # Woke up on a ringing alarm: taking DIALOG dismisses it.
                     # Add DIALOG *before* releasing ALERT so the release doesn't
@@ -107,7 +111,23 @@ class AudioFocusManager:
                     # brain/timer.py's dismiss_ringing_alarm().
                     self._dismiss_ringing_alarm()
                 self._active.add(Channel.DIALOG)
-                self._pause_spotify()
+                # Backgrounded, not run inline: this is 2-3 sequential
+                # Spotify Web API round-trips (is_playing's current_playback,
+                # then stop's own device lookup + pause_playback). Run
+                # synchronously here, it sits squarely between a wake word
+                # firing and the recording stream opening -- confirmed live
+                # as the actual cause of a run of "loses the first half of a
+                # fast, no-pause command" reports: the mic simply wasn't
+                # listening yet while these calls were in flight, sometimes
+                # for over a second. A user who starts talking immediately
+                # now briefly has their own voice mixed with whatever
+                # Spotify was playing, a far smaller cost than losing the
+                # command outright. release() joins this thread before
+                # reading the state it sets, so there's no race there.
+                self._dialog_bg_thread = threading.Thread(
+                    target=self._dialog_background_work, daemon=True
+                )
+                self._dialog_bg_thread.start()
             elif channel == Channel.ALERT:
                 # Snapshot genuine music before the alarm track overwrites it on
                 # the shared Connect device. If DIALOG is up, mark it preempted
@@ -118,6 +138,17 @@ class AudioFocusManager:
                 self._active.add(Channel.ALERT)
 
     def release(self, channel: Channel) -> None:
+        if channel == Channel.DIALOG and self._dialog_bg_thread is not None:
+            # Make sure the background Spotify work from acquire() (see
+            # _dialog_background_work) has actually finished setting
+            # _content_backgrounded/_content_should_resume/_content_state
+            # before _release_locked below reads them -- otherwise a
+            # fast conversation could release before that work completes,
+            # reading stale (pre-acquire) state. This can block briefly if
+            # Spotify is still slow to respond, but only here, at the end
+            # of a turn, never between a wake word and the mic opening.
+            self._dialog_bg_thread.join()
+            self._dialog_bg_thread = None
         with self._lock:
             state = self._release_locked(channel, resume=True)
         if state is not None:
@@ -166,21 +197,39 @@ class AudioFocusManager:
             return state  # caller performs the actual resume outside the lock
         return None
 
+    def _dialog_background_work(self) -> None:
+        """Runs in its own thread, spawned from acquire(DIALOG) -- see the
+        comment there. Does the same two steps acquire() used to do inline
+        (snapshot-if-playing, then pause), just off the critical path
+        between a wake word firing and the recording stream opening.
+        """
+        self._background_content_locked()
+        self._pause_spotify()
+
     def _background_content_locked(self) -> None:
         # Snapshot + remember to resume, only when *genuine* music is the
         # audible layer. If an ALERT is already active the audible thing is an
         # alarm, not content; if content is already backgrounded the earlier
-        # snapshot (the real song) must be kept, not overwritten.
-        if self._content_backgrounded or Channel.ALERT in self._active:
-            return
+        # snapshot (the real song) must be kept, not overwritten. Takes the
+        # lock itself (not just documented as "call with it held") since,
+        # unlike before, this can now run from _dialog_background_work's own
+        # thread rather than always inline inside acquire()'s `with
+        # self._lock:` -- reentrant, so the ALERT call site (still inline,
+        # still holding the lock already) is unaffected.
+        with self._lock:
+            if self._content_backgrounded or Channel.ALERT in self._active:
+                return
         from . import spotify
         try:
-            if spotify.is_playing():
-                self._content_state = spotify.capture_playback_state()
+            is_playing = spotify.is_playing()
+            state = spotify.capture_playback_state() if is_playing else None
+        except Exception:
+            return
+        with self._lock:
+            if is_playing and not self._content_backgrounded and Channel.ALERT not in self._active:
+                self._content_state = state
                 self._content_backgrounded = True
                 self._content_should_resume = True
-        except Exception:
-            pass
 
     def _pause_spotify(self) -> None:
         from . import spotify
@@ -190,9 +239,18 @@ class AudioFocusManager:
             pass
 
     def _dismiss_ringing_alarm(self) -> None:
-        from . import timer
+        from . import reminders, timer
+        # Both brain/timer.py's countdown alarm and brain/reminders.py's
+        # wakeup-reminder alarm hold Channel.ALERT the same way and can
+        # never both be ringing at once (this channel has one holder at a
+        # time) -- try both dismissals; whichever one isn't actually
+        # running is just a no-op.
         try:
             timer.dismiss_ringing_alarm()
+        except Exception:
+            pass
+        try:
+            reminders.dismiss_ringing_reminder()
         except Exception:
             pass
 
