@@ -27,6 +27,8 @@ need, on its own slower cadence -- see its docstring.
 from __future__ import annotations
 
 import json
+import os
+import signal
 import threading
 import time
 from datetime import datetime, timedelta
@@ -83,6 +85,62 @@ CHIME_WAV = Path(__file__).parent.parent / "assets" / "chime.wav"
 HALACHA_TITLE_KEYWORD = "הלכה"
 
 _lead = timedelta(minutes=REMINDER_LEAD_MINUTES)
+
+# Set by request_refetch() (called from a different thread -- e.g.
+# brain/tools.py right after add_calendar_event creates a new reminder) to
+# make _poll_loop refresh its cache on its very next iteration, regardless
+# of FETCH_INTERVAL_SECONDS. Without this, a reminder due within the
+# current ~5-minute fetch window could sit unseen in Google Calendar until
+# the next scheduled fetch -- confirmed live: a reminder created 2 minutes
+# before its own due time fired about 4 minutes late, since the poller's
+# cache (already fetched moments before the reminder even existed) had no
+# way to know about it until its next scheduled refresh.
+_force_refetch = threading.Event()
+
+# wake_word_daemon.py's own pidfile (see its module docstring) -- reused here
+# purely to find its PID from a *different* process, not to manage its
+# lifecycle. Computed directly rather than importing wake_word_daemon.py,
+# which already imports this module (start_reminders) and would be circular.
+_WAKE_WORD_DAEMON_PIDFILE = Path(__file__).parent.parent / "wake_word_daemon.pid"
+
+
+def request_refetch() -> None:
+    """Ask the reminders poller to refresh its calendar cache immediately,
+    rather than waiting up to FETCH_INTERVAL_SECONDS -- call this right
+    after creating or editing a reminder that might be due soon.
+
+    Setting _force_refetch only takes effect within the calling process --
+    a no-op if the poller isn't running there (e.g. this call came from
+    telegram_bot_daemon.py, a separate process with its own memory from
+    wake_word_daemon.py's poller). _notify_other_process covers that case
+    by signaling the *other* process's own in-process Event instead, so a
+    reminder created via Telegram gets the same immediate pickup as one
+    created by voice.
+    """
+    _force_refetch.set()
+    _notify_other_process()
+
+
+def _notify_other_process() -> None:
+    """Best-effort SIGUSR1 to wake_word_daemon.py's PID, if it's a different,
+    still-running process from this one -- see request_refetch(). Silently
+    does nothing if the pidfile is missing/stale or the process isn't
+    actually running: this is a latency nice-to-have, never something a
+    reminder's creation should fail over. wake_word_daemon.py's own SIGUSR1
+    handler calls request_refetch() again from inside that process, which
+    is itself a no-op cross-process step there (same PID), just setting its
+    local _force_refetch.
+    """
+    try:
+        pid = int(_WAKE_WORD_DAEMON_PIDFILE.read_text().strip())
+    except (OSError, ValueError):
+        return
+    if pid == os.getpid():
+        return  # this process's own poller (if any) is already handled above
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def _tz() -> ZoneInfo:
@@ -436,7 +494,8 @@ def _poll_loop(out_device: Device) -> None:
 
     while True:
         now_monotonic = time.monotonic()
-        if now_monotonic - last_fetch >= FETCH_INTERVAL_SECONDS or not cache:
+        if now_monotonic - last_fetch >= FETCH_INTERVAL_SECONDS or not cache or _force_refetch.is_set():
+            _force_refetch.clear()
             try:
                 now = datetime.now(_tz())
                 cache = gcal.upcoming_between(now, now + timedelta(hours=FETCH_WINDOW_HOURS))

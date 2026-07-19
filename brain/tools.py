@@ -742,6 +742,11 @@ def execute_tool(name: str, language: str, tool_input: dict, out_device=None) ->
             )
         except gcal.CalendarError as exc:
             return f"status: error_calendar_failed, details: {exc}"
+        # Without this, a reminder due within the current ~5-minute fetch
+        # window could sit unseen in reminders.py's cache until its next
+        # scheduled refresh -- confirmed live, a reminder created 2 minutes
+        # before its own due time fired about 4 minutes late.
+        reminders.request_refetch()
         if category == classify.UNCERTAIN and "event_group: " in result:
             group_id = result.rsplit("event_group: ", 1)[1].strip()
             classify.queue_uncertain(group_id, title)
