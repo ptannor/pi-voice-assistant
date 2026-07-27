@@ -20,7 +20,7 @@ if [ -z "${PI_USER:-}" ]; then
   fi
 fi
 
-PI_HOST="${PI_HOST:-raspberrypi.local}"
+PI_HOST="${PI_HOST:-mendy-pi.local}"
 PI_DIR="${PI_DIR:-pi-voice-assistant}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/pi_voice_assistant}"
 
